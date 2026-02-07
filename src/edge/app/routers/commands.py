@@ -20,4 +20,6 @@ def receive_command(payload: CommandPayload, handler: CommandHandler = Depends(g
         session_id=payload.session_id,
         node_id=payload.node_id,
         cmd=payload.cmd,
+        phase=handler.state.phase.value,
+        last_updated_ms=handler.state.last_updated_ms,
     )

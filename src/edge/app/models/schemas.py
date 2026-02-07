@@ -8,3 +8,5 @@ class CommandAck(BaseModel):
     session_id: str
     node_id: int
     cmd: str
+    phase: str | None = None
+    last_updated_ms: int | None = None

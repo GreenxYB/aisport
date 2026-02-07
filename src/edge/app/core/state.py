@@ -21,3 +21,6 @@ class NodeState(BaseModel):
     expected_start_time: Optional[int] = None
     stop_reason: Optional[str] = None
     last_updated_ms: Optional[int] = None
+    capture_running: bool = False
+    capture_fps_est: Optional[float] = None
+    last_frame_ts: Optional[int] = None

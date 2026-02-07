@@ -1,0 +1,74 @@
+{
+  "info": {
+    "name": "AI Sport Edge Commands",
+    "_postman_id": "a1b2c3d4-edge-commands",
+    "description": "Manual command tests to edge node",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "CMD_INIT",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cmd\": \"CMD_INIT\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"IDENTITY_BINDING\",\n  \"config\": {\n    \"project_type\": \"200m\",\n    \"lane_count\": 8,\n    \"sync_time\": 1738416000000\n  }\n}"
+        },
+        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+      }
+    },
+    {
+      "name": "CMD_BINDING_SYNC",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cmd\": \"CMD_BINDING_SYNC\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"config\": {\n    \"bindings\": [\n      { \"lane\": 1, \"student_id\": \"S101\", \"feature_id\": \"F001\" },\n      { \"lane\": 2, \"student_id\": \"S102\", \"feature_id\": \"F002\" }\n    ]\n  }\n}"
+        },
+        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+      }
+    },
+    {
+      "name": "CMD_START_MONITOR",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cmd\": \"CMD_START_MONITOR\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"config\": {\n    \"expected_start_time\": 1738416005000,\n    \"false_start_check\": true,\n    \"tracking_active\": true\n  }\n}"
+        },
+        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+      }
+    },
+    {
+      "name": "CMD_STOP",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cmd\": \"CMD_STOP\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"config\": {\n    \"reason\": \"MANUAL_ABORT\"\n  }\n}"
+        },
+        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+      }
+    },
+    {
+      "name": "STATUS",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "http://localhost:8100/status", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["status"] }
+      }
+    }
+  ]
+}

@@ -29,6 +29,10 @@
 - `CMD_STOP`：紧急终止。config 示例：`{"reason":"FALSE_START_LANE_3"}`。
 - `CMD_HEARTBEAT`：可选，云端对节点状态轮询/保活。
 
+状态机约束（Edge）：
+- 允许：`IDLE -> CMD_INIT -> BINDING -> CMD_BINDING_SYNC -> BINDING -> CMD_START_MONITOR -> MONITORING -> CMD_STOP -> STOPPED`
+- 其他顺序将返回 `409 Invalid phase`。
+
 ## Edge → Cloud 回传
 ### 身份绑定
 `msg_type: "ID_REPORT"`
@@ -87,8 +91,12 @@
 ```
 
 ## 错误与应答
-- HTTP 200 + `{"status":"accepted"}` 代表云端已收。后续处理失败需另行事件通知。
-- 常见错误码：400（参数错误）、404（会话/节点未找到）、409（状态冲突）、500（服务器错误）。
+- HTTP 200 + `{"status":"accepted","phase":...,"last_updated_ms":...}` 代表节点已收并更新状态。
+- 常见错误码：
+  - 400：参数错误/不支持的指令
+  - 404：会话/节点未找到（预留）
+  - 409：状态冲突（例如未 INIT 就 START_MONITOR，或 session_id 不一致）
+  - 500：节点内部错误
 
 ## 安全
 - 鉴权预留：HTTP Header `Authorization: Bearer <token>`；token 由云端 IAM 发放。

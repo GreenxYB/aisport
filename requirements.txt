@@ -2,3 +2,6 @@ fastapi
 uvicorn
 pydantic>=2.5
 pydantic-settings>=2.0
+pytest
+opencv-python-headless
+numpy
