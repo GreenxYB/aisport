@@ -31,6 +31,14 @@ def create_app() -> FastAPI:
     app.include_router(commands.router, prefix="/commands", tags=["commands"])
     app.include_router(status.router, prefix="/status", tags=["status"])
     app.include_router(preview.router, prefix="/preview", tags=["preview"])
+
+    @app.on_event("startup")
+    def _startup() -> None:
+        # Initialize handler on startup to auto-open camera
+        from .routers.commands import get_handler
+
+        get_handler()
+
     return app
 
 

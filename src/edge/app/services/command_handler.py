@@ -10,6 +10,8 @@ from common.protocol import CommandPayload
 from ..core.config import get_settings
 from ..core.state import NodePhase, NodeState
 from .camera import CaptureManager
+from .event_simulator import EventSimulator
+from .algorithms import AlgorithmRunner
 
 
 class CommandHandler:
@@ -19,10 +21,16 @@ class CommandHandler:
         self.state = self._load_state()
         self.logger = logging.getLogger("edge.command")
         self.capture = CaptureManager(on_frame=self._on_frame)
+        self.event_sim = EventSimulator(self.state)
+        self.algo = AlgorithmRunner(self.state)
         if self.settings.auto_start_capture:
-            self.capture.start()
-            self.capture.start_display()
-            self.state.capture_running = True
+            started = self.capture.start()
+            self.state.capture_running = started
+            if started:
+                self.capture.start_display()
+                self.state.capture_error = None
+            else:
+                self.state.capture_error = "auto_start_failed"
         self.allowed_cmds = {
             "CMD_INIT",
             "CMD_BINDING_SYNC",
@@ -71,6 +79,11 @@ class CommandHandler:
         self.state.bindings = []
         self.state.expected_start_time = None
         self.state.stop_reason = None
+        self.state.events_generated = 0
+        self.state.last_event_ts = None
+        self.state.finish_reports_generated = 0
+        self.state.last_finish_ts = None
+        self.event_sim.stop()
         self._touch(payload.cmd)
 
     def _handle_binding_sync(self, payload: CommandPayload) -> None:
@@ -89,9 +102,18 @@ class CommandHandler:
         # simulate activation result
         self.state.config["tracking_active"] = (payload.config or {}).get("tracking_active", True)
         if not self.capture._running.is_set():
-            self.capture.start()
-            self.capture.start_display()
-        self.state.capture_running = True
+            try:
+                started = self.capture.start(raise_on_fail=True)
+            except Exception as exc:
+                self.state.capture_error = str(exc)
+                raise HTTPException(status_code=503, detail="Camera open failed")
+            if started:
+                self.capture.start_display()
+                self.state.capture_error = None
+        self.state.capture_running = self.capture._running.is_set()
+        if self.settings.simulate_events:
+            lane_count = int(self.state.config.get("lane_count", 1) or 1)
+            self.event_sim.start(self.state.session_id or "UNKNOWN", lane_count)
         self._touch(payload.cmd)
 
     def _handle_stop(self, payload: CommandPayload) -> None:
@@ -102,6 +124,8 @@ class CommandHandler:
         self.state.config["tracking_active"] = False
         self.capture.stop()
         self.state.capture_running = False
+        self.state.capture_error = None
+        self.event_sim.stop()
         self._touch(payload.cmd)
 
     def _handle_heartbeat(self, payload: CommandPayload) -> None:
@@ -137,6 +161,8 @@ class CommandHandler:
             if delta > 0:
                 self.state.capture_fps_est = round(1000.0 / delta, 2)
         self.state.last_frame_ts = int(ts_ms)
+        if self.state.phase == NodePhase.MONITORING:
+            self.algo.process_frame(frame, ts_ms)
 
     # --- persistence ---
     def _persist_state(self) -> None:

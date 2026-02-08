@@ -7,3 +7,10 @@ data/models/
 data/samples/
 *.db
 logs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.trt
+*.weights

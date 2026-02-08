@@ -10,5 +10,9 @@ router = APIRouter()
 def snapshot(handler: CommandHandler = Depends(get_handler)):
     jpeg = handler.capture.snapshot_jpeg()
     if not jpeg:
-        raise HTTPException(status_code=503, detail="No frame available yet")
+        err = handler.capture.last_encode_error()
+        detail = "No frame available yet"
+        if err:
+            detail = f"No frame available yet: {err}"
+        raise HTTPException(status_code=503, detail=detail)
     return Response(content=jpeg, media_type="image/jpeg")

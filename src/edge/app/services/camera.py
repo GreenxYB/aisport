@@ -28,7 +28,13 @@ class CameraSource:
             self.log.info("Camera in simulate mode; no physical device needed")
             return
         source = self.settings.rtsp_url or self.settings.camera_device
-        self.cap = cv2.VideoCapture(source)
+        # Accept numeric index passed as string
+        if isinstance(source, str) and source.isdigit():
+            source_idx = int(source)
+            # Prefer DirectShow on Windows for more stable webcam open
+            self.cap = cv2.VideoCapture(source_idx, cv2.CAP_DSHOW)
+        else:
+            self.cap = cv2.VideoCapture(source)
         if not self.cap.isOpened():
             raise RuntimeError(f"Failed to open camera source: {source}")
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.capture_width)
@@ -70,18 +76,27 @@ class CaptureManager:
         self._running = threading.Event()
         self._last_ts: Optional[float] = None
         self._last_jpeg: Optional[bytes] = None
+        self._last_encode_error: Optional[str] = None
         self._lock = threading.Lock()
         self._display_thread: Optional[threading.Thread] = None
         self._last_frame: Optional[np.ndarray] = None
+        self._last_preview_frame: Optional[np.ndarray] = None
 
-    def start(self) -> None:
+    def start(self, raise_on_fail: bool = False) -> bool:
         if self._running.is_set():
-            return
-        self.camera.open()
+            return True
+        try:
+            self.camera.open()
+        except Exception as exc:
+            self.log.error("Camera open failed: %s", exc)
+            if raise_on_fail:
+                raise
+            return False
         self._running.set()
         self._thread = threading.Thread(target=self._loop, name="capture-loop", daemon=True)
         self._thread.start()
         self.log.info("Capture loop started")
+        return True
 
     def stop(self) -> None:
         if not self._running.is_set():
@@ -99,14 +114,25 @@ class CaptureManager:
             if ok and ts_ms and frame is not None:
                 self._last_ts = ts_ms
                 try:
+                    frame = np.ascontiguousarray(frame)
+                    preview = frame
+                    if self.settings.display_mirror:
+                        preview = cv2.flip(frame, 1)
                     # Encode frame for preview
-                    ret, buf = cv2.imencode(".jpg", frame)
+                    ret, buf = cv2.imencode(".jpg", preview)
                     if ret:
                         with self._lock:
                             self._last_jpeg = buf.tobytes()
                             self._last_frame = frame
+                            self._last_preview_frame = preview
+                            self._last_encode_error = None
+                    else:
+                        with self._lock:
+                            self._last_encode_error = "imencode_failed"
                 except Exception as exc:  # pragma: no cover
                     self.log.warning("JPEG encode failed: %s", exc)
+                    with self._lock:
+                        self._last_encode_error = f"imencode_exception:{exc}"
                 try:
                     self.on_frame(frame, ts_ms)
                 except Exception as exc:  # pragma: no cover
@@ -119,7 +145,34 @@ class CaptureManager:
 
     def snapshot_jpeg(self) -> Optional[bytes]:
         with self._lock:
-            return self._last_jpeg
+            if self._last_jpeg:
+                return self._last_jpeg
+            if self._last_preview_frame is not None:
+                frame = self._last_preview_frame
+            elif self._last_frame is not None:
+                frame = self._last_frame
+                if self.settings.display_mirror:
+                    frame = cv2.flip(frame, 1)
+            else:
+                return None
+            # Try encode on demand
+            frame = np.ascontiguousarray(frame)
+        try:
+            ret, buf = cv2.imencode(".jpg", frame)
+            if ret:
+                jpeg = buf.tobytes()
+                with self._lock:
+                    self._last_jpeg = jpeg
+                    self._last_encode_error = None
+                return jpeg
+        except Exception as exc:
+            with self._lock:
+                self._last_encode_error = f"imencode_exception:{exc}"
+        return None
+
+    def last_encode_error(self) -> Optional[str]:
+        with self._lock:
+            return self._last_encode_error
 
     # ---- local display (debug only) ----
     def start_display(self) -> None:
@@ -136,8 +189,12 @@ class CaptureManager:
             while self._running.is_set():
                 frame = None
                 with self._lock:
-                    if self._last_frame is not None:
+                    if self._last_preview_frame is not None:
+                        frame = self._last_preview_frame.copy()
+                    elif self._last_frame is not None:
                         frame = self._last_frame.copy()
+                        if self.settings.display_mirror:
+                            frame = cv2.flip(frame, 1)
                 if frame is not None:
                     try:
                         cv2.imshow("Edge Preview", frame)

@@ -24,3 +24,12 @@ class NodeState(BaseModel):
     capture_running: bool = False
     capture_fps_est: Optional[float] = None
     last_frame_ts: Optional[int] = None
+    capture_error: Optional[str] = None
+    events_generated: int = 0
+    last_event_ts: Optional[int] = None
+    finish_reports_generated: int = 0
+    last_finish_ts: Optional[int] = None
+    reports_sent: int = 0
+    reports_failed: int = 0
+    algo_events_generated: int = 0
+    last_algo_ts: Optional[int] = None

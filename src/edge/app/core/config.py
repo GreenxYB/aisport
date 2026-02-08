@@ -20,13 +20,42 @@ class Settings(BaseSettings):
         True, description="Start camera capture on service startup"
     )
     display_preview: bool = Field(
-        False,
-        description="For local debug: show cv2.imshow live preview (requires GUI session)",
+        True,
+        description="Show cv2.imshow live preview by default (requires GUI session)",
+    )
+    display_mirror: bool = Field(
+        True, description="Mirror preview display and snapshot horizontally"
     )
     capture_fps: int = Field(15, description="Target capture FPS")
     capture_width: int = Field(640, description="Capture width")
     capture_height: int = Field(480, description="Capture height")
     model_dir: str = Field("./data/models", description="Model directory")
+    simulate_events: bool = Field(
+        True, description="Generate simulated events during monitoring"
+    )
+    event_interval_sec: float = Field(2.0, description="Simulated event interval seconds")
+    simulate_finish_reports: bool = Field(
+        True, description="Generate simulated finish reports during monitoring"
+    )
+    finish_interval_sec: float = Field(8.0, description="Simulated finish report interval seconds")
+    report_enabled: bool = Field(
+        False, description="Enable HTTP reporting of events to cloud service"
+    )
+    report_base_url: str = Field(
+        "http://localhost:8000/nodes/reports",
+        description="Cloud report base URL (violation/finish endpoints appended)",
+    )
+    report_timeout_sec: float = Field(2.0, description="HTTP report timeout seconds")
+    report_retry_enabled: bool = Field(
+        True, description="Retry failed reports in background"
+    )
+    report_retry_interval_sec: float = Field(
+        3.0, description="Retry interval for failed reports"
+    )
+    report_retry_max: int = Field(5, description="Max retry attempts per event")
+    algo_enabled: bool = Field(True, description="Enable algorithm runner")
+    algo_target_fps: int = Field(5, description="Target FPS for algorithm processing")
+    algo_log_path: str = Field("logs/alg_events.jsonl", description="Algorithm event log")
 
 
 @lru_cache()
