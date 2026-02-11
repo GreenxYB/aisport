@@ -6,7 +6,7 @@ from typing import List, Dict, Optional
 import numpy as np
 
 from ...core.config import get_settings
-from ...core.state import NodeState
+from ...core.state import NodePhase, NodeState
 from .face_binding import FaceBindingAlgo
 from .violation import ViolationAlgo
 from .finish_line import FinishLineAlgo
@@ -30,10 +30,13 @@ class AlgorithmRunner:
         events: List[Dict] = []
 
         # Placeholder calls; replace with real models later
-        events.extend(self.violation.process(frame, ts_ms))
-        finish_report = self.finish.process(frame, ts_ms)
-        if finish_report:
-            events.append(finish_report)
+        if self.state.phase == NodePhase.BINDING:
+            events.extend(self.face.process(frame, ts_ms))
+        if self.state.phase == NodePhase.MONITORING:
+            events.extend(self.violation.process(frame, ts_ms))
+            finish_report = self.finish.process(frame, ts_ms)
+            if finish_report:
+                events.append(finish_report)
 
         # Add common fields
         for ev in events:

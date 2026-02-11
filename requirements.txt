@@ -5,3 +5,4 @@ pydantic-settings>=2.0
 pytest
 opencv-python
 numpy
+baidu-aip

@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     algo_enabled: bool = Field(True, description="Enable algorithm runner")
     algo_target_fps: int = Field(5, description="Target FPS for algorithm processing")
     algo_log_path: str = Field("logs/alg_events.jsonl", description="Algorithm event log")
+    # Baidu face search
+    baidu_app_id: str = Field("", description="Baidu AIP App ID")
+    baidu_api_key: str = Field("", description="Baidu AIP API Key")
+    baidu_secret_key: str = Field("", description="Baidu AIP Secret Key")
+    baidu_group_id: str = Field("default", description="Baidu face group id")
 
 
 @lru_cache()

@@ -161,7 +161,7 @@ class CommandHandler:
             if delta > 0:
                 self.state.capture_fps_est = round(1000.0 / delta, 2)
         self.state.last_frame_ts = int(ts_ms)
-        if self.state.phase == NodePhase.MONITORING:
+        if self.state.phase in (NodePhase.BINDING, NodePhase.MONITORING):
             self.algo.process_frame(frame, ts_ms)
 
     # --- persistence ---

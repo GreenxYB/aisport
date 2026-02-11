@@ -16,6 +16,8 @@ python run_edge.py
 本地接收器：运行 `python -m uvicorn scripts.mock_cloud:app --host 0.0.0.0 --port 8000`，收到的事件写入 `logs/cloud_received.jsonl`。
 失败重放：`python scripts/replay_failed_events.py --base-url http://localhost:8000/nodes/reports`（成功会归档到 `logs/events_failed.archived.jsonl`，失败仍保留在原文件）
 算法框架：`src/edge/app/services/algorithms` 提供占位算法接口与 `AlgorithmRunner`。离线回放：`python scripts/offline_playback.py --video <path>`
+人脸绑定（Baidu AIP）：在 `.env.edge` 或环境变量设置 `BAIDU_APP_ID / BAIDU_API_KEY / BAIDU_SECRET_KEY / BAIDU_GROUP_ID`，并确保安装 `baidu-aip`。
+测试 Baidu 接口：`python scripts/test_baidu_face.py --image <path> --group <group_id>`
 
 ## 手动发指令（Postman）
 导入 `docs/protocols/postman_collection.json`，包含：
