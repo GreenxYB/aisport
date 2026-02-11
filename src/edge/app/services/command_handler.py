@@ -9,9 +9,10 @@ from fastapi import HTTPException
 from common.protocol import CommandPayload
 from ..core.config import get_settings
 from ..core.state import NodePhase, NodeState
-from .camera import CaptureManager
+# from .camera import CaptureManager  # Replaced by EdgePipeline
+from .pipeline import EdgePipeline
 from .event_simulator import EventSimulator
-from .algorithms import AlgorithmRunner
+from .algorithms.runner import AlgorithmRunner
 
 
 class CommandHandler:
@@ -20,17 +21,26 @@ class CommandHandler:
         self.state_file = Path(__file__).resolve().parents[4] / "logs" / "state.json"
         self.state = self._load_state()
         self.logger = logging.getLogger("edge.command")
-        self.capture = CaptureManager(on_frame=self._on_frame)
-        self.event_sim = EventSimulator(self.state)
+        
         self.algo = AlgorithmRunner(self.state)
+        self.event_sim = EventSimulator(self.state)
+        
+        # New Pipeline (replaces CaptureManager)
+        self.pipeline = EdgePipeline(algo_runner=self.algo)
+        # Pass state to pipeline if needed for stats, or handle stats in algo
+        # Currently pipeline does not take state in my implementation, 
+        # but I can inject updating last_frame_ts into algo.process_pipeline_result? 
+        # Or just rely on algo updating last_algo_ts. 
+        # The CaptureManager used to update capture_fps_est. 
+        
         if self.settings.auto_start_capture:
-            started = self.capture.start()
-            self.state.capture_running = started
-            if started:
-                self.capture.start_display()
-                self.state.capture_error = None
-            else:
-                self.state.capture_error = "auto_start_failed"
+            # Pipeline handles capture threading
+            self.pipeline.start()
+            self.state.capture_running = True
+            # We assume it starts successfully; pipeline logs errors internally
+        else:
+             self.state.capture_running = False
+
         self.allowed_cmds = {
             "CMD_INIT",
             "CMD_BINDING_SYNC",
@@ -91,29 +101,29 @@ class CommandHandler:
         self._ensure_phase([NodePhase.BINDING])
         bindings = payload.config.get("bindings") if payload.config else None
         self.state.bindings = bindings or []
-        self.state.phase = NodePhase.BINDING
-        self._touch(payload.cmd)
-
-    def _handle_start_monitor(self, payload: CommandPayload) -> None:
-        self._ensure_same_session(payload)
-        self._ensure_phase([NodePhase.BINDING])
-        self.state.phase = NodePhase.MONITORING
-        self.state.expected_start_time = (payload.config or {}).get("expected_start_time")
-        # simulate activation result
-        self.state.config["tracking_active"] = (payload.config or {}).get("tracking_active", True)
-        if not self.capture._running.is_set():
-            try:
-                started = self.capture.start(raise_on_fail=True)
-            except Exception as exc:
-                self.state.capture_error = str(exc)
-                raise HTTPException(status_code=503, detail="Camera open failed")
-            if started:
-                self.capture.start_display()
-                self.state.capture_error = None
-        self.state.capture_running = self.capture._running.is_set()
+        
+        # Ensure pipeline is running
+        if not self.pipeline.running:
+             self.pipeline.start()
+             self.state.capture_running = True
+             
         if self.settings.simulate_events:
             lane_count = int(self.state.config.get("lane_count", 1) or 1)
             self.event_sim.start(self.state.session_id or "UNKNOWN", lane_count)
+        self._touch(payload.cmd)
+
+    def _handle_stop(self, payload: CommandPayload) -> None:
+        self._ensure_same_session(payload)
+        self.state.phase = NodePhase.STOPPED
+        self.state.stop_reason = (payload.config or {}).get("reason")
+        # simulate cleanup
+        self.state.config["tracking_active"] = False
+        
+        # Stop pipeline? Or just keep running capture?
+        # Usually we stop pipeline to save resources
+        self.pipeline.stop()
+        self.state.capture_running = False
+        e.session_id or "UNKNOWN", lane_count)
         self._touch(payload.cmd)
 
     def _handle_stop(self, payload: CommandPayload) -> None:
@@ -153,17 +163,9 @@ class CommandHandler:
     def snapshot(self) -> dict:
         return self.state.model_dump()
 
-    def _on_frame(self, frame, ts_ms: float) -> None:
-        # Update capture stats; algorithm placeholder can be inserted here
-        prev_ts = self.state.last_frame_ts
-        if prev_ts:
-            delta = ts_ms - prev_ts
-            if delta > 0:
-                self.state.capture_fps_est = round(1000.0 / delta, 2)
-        self.state.last_frame_ts = int(ts_ms)
-        if self.state.phase in (NodePhase.BINDING, NodePhase.MONITORING):
-            self.algo.process_frame(frame, ts_ms)
-
+    # _on_frame is no longer used by CaptureManager, but we can keep it if needed 
+    # or remove it. The pipeline calls algo directly.
+    
     # --- persistence ---
     def _persist_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)

@@ -6,3 +6,4 @@ pytest
 opencv-python
 numpy
 baidu-aip
+ultralytics

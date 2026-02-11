@@ -50,6 +50,20 @@ class AlgorithmRunner:
 
         return events
 
+    def process_pipeline_result(
+        self, frame: np.ndarray, tracker_result, ts_ms: float
+    ) -> List[Dict]:
+        """
+        Process the result from the inference pipeline.
+        tracker_result: TrackerResults object containing tracks and keypoints.
+        """
+        # Update capture stats here or in pipeline.
+        # For now, we delegate to the existing frame processing logic
+        # which handles phase checks and event generation.
+        # In the future, we can use tracker_result.result (tracks) and tracker_result.keypoints directly.
+
+        return self.process_frame(frame, ts_ms)
+
     def _should_run(self, ts_ms: float) -> bool:
         interval_ms = int(1000 / max(self.settings.algo_target_fps, 1))
         now = int(ts_ms)
