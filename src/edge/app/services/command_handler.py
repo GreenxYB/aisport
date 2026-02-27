@@ -51,7 +51,7 @@ class CommandHandler:
         self._dispatch_map: dict[str, Callable[[CommandPayload], None]] = {
             "CMD_INIT": self._handle_init,
             "CMD_BINDING_SYNC": self._handle_binding_sync,
-            "CMD_START_MONITOR": self._handle_start_monitor,
+            # "CMD_START_MONITOR": self._handle_start_monitor,
             "CMD_STOP": self._handle_stop,
             "CMD_HEARTBEAT": self._handle_heartbeat,
         }
@@ -123,7 +123,7 @@ class CommandHandler:
         # Usually we stop pipeline to save resources
         self.pipeline.stop()
         self.state.capture_running = False
-        e.session_id or "UNKNOWN", lane_count)
+        e.session_id or "UNKNOWN", lane_count
         self._touch(payload.cmd)
 
     def _handle_stop(self, payload: CommandPayload) -> None:

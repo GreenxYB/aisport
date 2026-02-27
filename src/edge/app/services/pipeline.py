@@ -14,7 +14,7 @@ from ultralytics.utils import IterableSimpleNamespace, YAML
 from ultralytics.utils.checks import check_yaml
 
 from ..core.config import get_settings
-from .algorithms.models.yolo_trt import TRTYOLO
+from .algorithms.models.yolo_trt import TRTYOLO as YOLO
 
 logger = logging.getLogger("edge.pipeline")
 
@@ -245,10 +245,10 @@ class EdgePipeline:
         self.tracker = None
 
         # Determine model path
-        model_dir = Path(self.settings.model_dir)
+        self.model_dir = Path(self.settings.model_dir)
         # Assuming a default name or one from config, but config assumes folder.
         # User snippet had specific TRT path. We try to find a .trt file in model_dir or use a default.
-        self.model_path = str(model_dir / "yolo11n-pose.fp16.trt")
+        self.model_path = str(self.model_dir / "yolo11n-pose.engine")
         # Ensure directory exists?
 
     def start(self):
@@ -285,9 +285,7 @@ class EdgePipeline:
                 self.logger.info(f"Loading TRT Model from {self.model_path}")
                 # Check if file exists, if not, maybe simulated inference or error?
                 if Path(self.model_path).exists():
-                    self.model = TRTYOLO(
-                        self.model_path, device_id=0
-                    )  # Assuming CUDA device 0
+                    self.model = YOLO(self.model_path)
                     self.logger.info("TRT YOLO Model loaded.")
                 else:
                     self.logger.warning(
