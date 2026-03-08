@@ -5,6 +5,9 @@ __pycache__/
 .env.edge
 data/models/
 data/samples/
+data/sample_res/
+data/
+runs/
 *.db
 logs/
 *.pt

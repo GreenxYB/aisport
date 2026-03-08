@@ -18,6 +18,9 @@ python run_edge.py
 算法框架：`src/edge/app/services/algorithms` 提供占位算法接口与 `AlgorithmRunner`。离线回放：`python scripts/offline_playback.py --video <path>`
 人脸绑定（Baidu AIP）：在 `.env.edge` 或环境变量设置 `BAIDU_APP_ID / BAIDU_API_KEY / BAIDU_SECRET_KEY / BAIDU_GROUP_ID`，并确保安装 `baidu-aip`。
 测试 Baidu 接口：`python scripts/test_baidu_face.py --image <path> --group <group_id>`
+调试查看最近识别：`GET /face/last`
+YOLO TRT：`YOLO_ENGINE_PATH` / `YOLO_NAMES_PATH` 默认从 `data/models` 读取（`yolo11n-pose-fp16.engine`, `pose.names`），推理结果会写入 `logs/alg_events.jsonl`（`VIOLATION_EVENT`）。
+实时可视化测试：`python scripts/test_yolo_realtime.py --source 0 --model data/models/yolo11n-pose.pt --imgsz 640`（如需镜像加 `--mirror`）
 
 ## 手动发指令（Postman）
 导入 `docs/protocols/postman_collection.json`，包含：
@@ -33,6 +36,16 @@ cd e:\computer\CursorProject\AISportProject\python
 $env:PYTHONPATH="src"
 pytest tests/unit/test_edge_commands.py
 ```
+
+## Visualization Style Config
+- Shared keys for service preview and scripts in `.env.edge` (or `configs/edge.example.env`):
+  `VIZ_LINE_COLOR`, `VIZ_READY_COLOR`, `VIZ_ALERT_COLOR`, `VIZ_COUNTDOWN_COLOR`,
+  `VIZ_BOX_COLOR`, `VIZ_TOE_ANKLE_COLOR`, `VIZ_TOE_COLOR`,
+  `VIZ_HUD_FONT_SCALE`, `VIZ_HUD_FONT_THICKNESS`,
+  `VIZ_LINE_THICKNESS`, `VIZ_BOX_THICKNESS`,
+  `VIZ_TOE_ANKLE_RADIUS`, `VIZ_TOE_RADIUS`, `VIZ_TOE_LINK_THICKNESS`
+- Color format: `B,G,R`, e.g. `0,255,255`.
+- Script-specific keys remain supported (`START_*`, `FINISH_*`) as fallback.
 
 ## 分支策略
 - `main`: 生产分支

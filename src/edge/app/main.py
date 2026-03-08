@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from .routers import health, commands, status, preview
+from .routers import health, commands, status, preview, face
 
 
 def _setup_logging() -> None:
@@ -31,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(commands.router, prefix="/commands", tags=["commands"])
     app.include_router(status.router, prefix="/status", tags=["status"])
     app.include_router(preview.router, prefix="/preview", tags=["preview"])
+    app.include_router(face.router, prefix="/face", tags=["face"])
 
     @app.on_event("startup")
     def _startup() -> None:

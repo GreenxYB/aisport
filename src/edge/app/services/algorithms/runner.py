@@ -17,8 +17,8 @@ class AlgorithmRunner:
         self.settings = get_settings()
         self.state = state
         self.face = FaceBindingAlgo()
-        self.violation = ViolationAlgo()
-        self.finish = FinishLineAlgo()
+        self.violation = ViolationAlgo(self.state)
+        self.finish = FinishLineAlgo(self.state)
         self._last_run_ms: Optional[int] = None
         self._log_path = Path(self.settings.algo_log_path)
 
@@ -34,7 +34,12 @@ class AlgorithmRunner:
             events.extend(self.face.process(frame, ts_ms))
         if self.state.phase == NodePhase.MONITORING:
             events.extend(self.violation.process(frame, ts_ms))
-            finish_report = self.finish.process(frame, ts_ms)
+            finish_report = self.finish.process_detections(
+                dets=self.violation.last_dets,
+                track_ids=self.violation.last_track_ids,
+                ts_ms=ts_ms,
+                frame_shape=frame.shape[:2],
+            )
             if finish_report:
                 events.append(finish_report)
 
@@ -44,6 +49,13 @@ class AlgorithmRunner:
             ev.setdefault("session_id", self.state.session_id)
 
         if events:
+            for ev in events:
+                if ev.get("msg_type") == "ID_REPORT":
+                    self.state.last_face_result = ev
+                    self.state.last_face_ts = int(ts_ms)
+                if ev.get("msg_type") == "VIOLATION_EVENT" and ev.get("event") == "FALSE_START":
+                    self.state.last_false_start_event = ev
+                    self.state.last_false_start_ts = int(ts_ms)
             self._append(events)
             self.state.algo_events_generated += len(events)
             self.state.last_algo_ts = int(ts_ms)

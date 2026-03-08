@@ -9,10 +9,9 @@ from fastapi import HTTPException
 from common.protocol import CommandPayload
 from ..core.config import get_settings
 from ..core.state import NodePhase, NodeState
-# from .camera import CaptureManager  # Replaced by EdgePipeline
-from .pipeline import EdgePipeline
+from .camera import CaptureManager
 from .event_simulator import EventSimulator
-from .algorithms.runner import AlgorithmRunner
+from .algorithms import AlgorithmRunner
 
 
 class CommandHandler:
@@ -21,26 +20,17 @@ class CommandHandler:
         self.state_file = Path(__file__).resolve().parents[4] / "logs" / "state.json"
         self.state = self._load_state()
         self.logger = logging.getLogger("edge.command")
-        
-        self.algo = AlgorithmRunner(self.state)
+        self.capture = CaptureManager(on_frame=self._on_frame, state=self.state)
         self.event_sim = EventSimulator(self.state)
-        
-        # New Pipeline (replaces CaptureManager)
-        self.pipeline = EdgePipeline(algo_runner=self.algo)
-        # Pass state to pipeline if needed for stats, or handle stats in algo
-        # Currently pipeline does not take state in my implementation, 
-        # but I can inject updating last_frame_ts into algo.process_pipeline_result? 
-        # Or just rely on algo updating last_algo_ts. 
-        # The CaptureManager used to update capture_fps_est. 
-        
+        self.algo = AlgorithmRunner(self.state)
         if self.settings.auto_start_capture:
-            # Pipeline handles capture threading
-            self.pipeline.start()
-            self.state.capture_running = True
-            # We assume it starts successfully; pipeline logs errors internally
-        else:
-             self.state.capture_running = False
-
+            started = self.capture.start()
+            self.state.capture_running = started
+            if started:
+                self.capture.start_display()
+                self.state.capture_error = None
+            else:
+                self.state.capture_error = "auto_start_failed"
         self.allowed_cmds = {
             "CMD_INIT",
             "CMD_BINDING_SYNC",
@@ -51,7 +41,7 @@ class CommandHandler:
         self._dispatch_map: dict[str, Callable[[CommandPayload], None]] = {
             "CMD_INIT": self._handle_init,
             "CMD_BINDING_SYNC": self._handle_binding_sync,
-            # "CMD_START_MONITOR": self._handle_start_monitor,
+            "CMD_START_MONITOR": self._handle_start_monitor,
             "CMD_STOP": self._handle_stop,
             "CMD_HEARTBEAT": self._handle_heartbeat,
         }
@@ -86,6 +76,7 @@ class CommandHandler:
         self.state.session_id = payload.session_id
         self.state.phase = NodePhase.BINDING
         self.state.config = payload.config or {}
+        self.state.config["ready_ts"] = None
         self.state.bindings = []
         self.state.expected_start_time = None
         self.state.stop_reason = None
@@ -101,29 +92,30 @@ class CommandHandler:
         self._ensure_phase([NodePhase.BINDING])
         bindings = payload.config.get("bindings") if payload.config else None
         self.state.bindings = bindings or []
-        
-        # Ensure pipeline is running
-        if not self.pipeline.running:
-             self.pipeline.start()
-             self.state.capture_running = True
-             
+        self.state.phase = NodePhase.BINDING
+        self.state.config["ready_ts"] = int(time.time() * 1000)
+        self._touch(payload.cmd)
+
+    def _handle_start_monitor(self, payload: CommandPayload) -> None:
+        self._ensure_same_session(payload)
+        self._ensure_phase([NodePhase.BINDING])
+        self.state.phase = NodePhase.MONITORING
+        self.state.expected_start_time = (payload.config or {}).get("expected_start_time")
+        # simulate activation result
+        self.state.config["tracking_active"] = (payload.config or {}).get("tracking_active", True)
+        if not self.capture._running.is_set():
+            try:
+                started = self.capture.start(raise_on_fail=True)
+            except Exception as exc:
+                self.state.capture_error = str(exc)
+                raise HTTPException(status_code=503, detail="Camera open failed")
+            if started:
+                self.capture.start_display()
+                self.state.capture_error = None
+        self.state.capture_running = self.capture._running.is_set()
         if self.settings.simulate_events:
             lane_count = int(self.state.config.get("lane_count", 1) or 1)
             self.event_sim.start(self.state.session_id or "UNKNOWN", lane_count)
-        self._touch(payload.cmd)
-
-    def _handle_stop(self, payload: CommandPayload) -> None:
-        self._ensure_same_session(payload)
-        self.state.phase = NodePhase.STOPPED
-        self.state.stop_reason = (payload.config or {}).get("reason")
-        # simulate cleanup
-        self.state.config["tracking_active"] = False
-        
-        # Stop pipeline? Or just keep running capture?
-        # Usually we stop pipeline to save resources
-        self.pipeline.stop()
-        self.state.capture_running = False
-        e.session_id or "UNKNOWN", lane_count
         self._touch(payload.cmd)
 
     def _handle_stop(self, payload: CommandPayload) -> None:
@@ -163,9 +155,17 @@ class CommandHandler:
     def snapshot(self) -> dict:
         return self.state.model_dump()
 
-    # _on_frame is no longer used by CaptureManager, but we can keep it if needed 
-    # or remove it. The pipeline calls algo directly.
-    
+    def _on_frame(self, frame, ts_ms: float) -> None:
+        # Update capture stats; algorithm placeholder can be inserted here
+        prev_ts = self.state.last_frame_ts
+        if prev_ts:
+            delta = ts_ms - prev_ts
+            if delta > 0:
+                self.state.capture_fps_est = round(1000.0 / delta, 2)
+        self.state.last_frame_ts = int(ts_ms)
+        if self.state.phase in (NodePhase.BINDING, NodePhase.MONITORING):
+            self.algo.process_frame(frame, ts_ms)
+
     # --- persistence ---
     def _persist_state(self) -> None:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
