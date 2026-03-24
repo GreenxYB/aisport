@@ -91,3 +91,55 @@ def test_unknown_command_rejected():
         },
     )
     assert resp.status_code == 400
+
+
+def test_full_workflow():
+    """测试完整的工作流程"""
+    client = build_client()
+    
+    # 1. 初始化
+    resp = client.post("/commands", json={
+        "cmd": "CMD_INIT",
+        "session_id": "RUN_TEST_001",
+        "node_id": 1,
+        "config": {"lane_count": 8},
+    })
+    assert resp.status_code == 200
+    
+    # 2. 绑定同步
+    resp = client.post("/commands", json={
+        "cmd": "CMD_BINDING_SYNC",
+        "session_id": "RUN_TEST_001",
+        "node_id": 1,
+        "config": {"bindings": [{"lane": 1, "athlete_id": "A001"}]},
+    })
+    assert resp.status_code == 200
+    
+    # 3. 开始监控
+    resp = client.post("/commands", json={
+        "cmd": "CMD_START_MONITOR",
+        "session_id": "RUN_TEST_001",
+        "node_id": 1,
+    })
+    assert resp.status_code == 200
+    status = client.get("/status").json()
+    assert status["phase"] == "MONITORING"
+    
+    # 4. 心跳
+    resp = client.post("/commands", json={
+        "cmd": "CMD_HEARTBEAT",
+        "session_id": "RUN_TEST_001",
+        "node_id": 1,
+    })
+    assert resp.status_code == 200
+    
+    # 5. 停止
+    resp = client.post("/commands", json={
+        "cmd": "CMD_STOP",
+        "session_id": "RUN_TEST_001",
+        "node_id": 1,
+        "config": {"reason": "测试结束"},
+    })
+    assert resp.status_code == 200
+    status = client.get("/status").json()
+    assert status["phase"] == "STOPPED"
