@@ -313,6 +313,9 @@ class VideoCaptureThread(threading.Thread):
 
             if not self.cap.isOpened():
                 logger.error(f"无法打开视频源 {self.source}")
+                # 视频源打开失败时，不要立即退出，而是继续尝试
+                # 这样可以在网络恢复后重新连接
+                time.sleep(1.0)
                 return
 
             # 设置视频参数
@@ -321,6 +324,7 @@ class VideoCaptureThread(threading.Thread):
             self.cap.set(cv2.CAP_PROP_FPS, self.fps_target)
 
             self.running = True
+            logger.info("开始捕获视频帧")
             while self.running:
                 self.timer.start("1_capture")
                 ret, frame = self.cap.read()
@@ -339,7 +343,12 @@ class VideoCaptureThread(threading.Thread):
         finally:
             if self.cap:
                 self.cap.release()
-            self.frame_queue.put(None)
+            # 无论是否正常停止，都放入 None 到队列，确保推理线程能够退出
+            try:
+                self.frame_queue.put(None, block=False)
+            except queue.Full:
+                # 队列已满，忽略
+                pass
 
     def stop(self):
         """停止捕获线程"""
@@ -436,6 +445,23 @@ class EdgePipeline:
         self.logger.info("启动 EdgePipeline...")
         self.running = True
 
+        # 清空队列中的残留数据
+        while not self.capture_queue.empty():
+            try:
+                self.capture_queue.get(block=False)
+            except queue.Empty:
+                break
+        while not self.inference_queue.empty():
+            try:
+                self.inference_queue.get(block=False)
+            except queue.Empty:
+                break
+        while not self.tracking_queue.empty():
+            try:
+                self.tracking_queue.get(block=False)
+            except queue.Empty:
+                break
+
         # 启动所有工作线程
         self.capture_thread.start()
         self.inference_thread.start()
@@ -447,12 +473,106 @@ class EdgePipeline:
         if not self.running:
             return
         self.logger.info("停止 EdgePipeline...")
+        
+        # 首先关闭窗口，避免窗口未响应
+        try:
+            cv2.destroyAllWindows()
+            self.logger.info("窗口已关闭")
+        except Exception as e:
+            self.logger.warning(f"关闭窗口时出错: {e}")
+        
+        # 标记为停止状态
         self.running = False
+        
+        # 停止捕获线程
         self.capture_thread.stop()
+        
+        # 清空队列，确保线程能够退出
+        while not self.capture_queue.empty():
+            try:
+                self.capture_queue.get(block=False)
+            except queue.Empty:
+                break
+        while not self.inference_queue.empty():
+            try:
+                self.inference_queue.get(block=False)
+            except queue.Empty:
+                break
+        while not self.tracking_queue.empty():
+            try:
+                self.tracking_queue.get(block=False)
+            except queue.Empty:
+                break
+        
+        # 等待所有线程退出
+        self.logger.info("等待线程退出...")
+        try:
+            # 等待捕获线程退出
+            self.capture_thread.join(timeout=10.0)
+            # 等待推理线程退出
+            if self.inference_thread.is_alive():
+                self.inference_thread.join(timeout=10.0)
+            # 等待跟踪线程退出
+            if self.tracker_thread.is_alive():
+                self.tracker_thread.join(timeout=10.0)
+            # 等待逻辑线程退出
+            if self.logic_thread.is_alive():
+                self.logic_thread.join(timeout=10.0)
+        except Exception as e:
+            self.logger.warning(f"等待线程退出时出错: {e}")
 
         # 输出性能报告
         self.timer.report()
-        cv2.destroyAllWindows()
+        
+        # 重新创建队列，避免残留数据
+        from queue import Queue
+        self.capture_queue = Queue(maxsize=50)  # 增大队列大小
+        self.inference_queue = Queue(maxsize=50)  # 增大队列大小
+        self.tracking_queue = Queue(maxsize=50)  # 增大队列大小
+        
+        # 重置跟踪器配置
+        self.cfg = IterableSimpleNamespace(
+            tracker_type="bytetrack",
+            track_high_thresh=0.5,
+            track_low_thresh=0.1,
+            new_track_thresh=0.6,
+            track_buffer=30,
+            match_thresh=0.8,
+            fuse_score=True
+        )
+        self.logger.info("BYTETracker 配置重置成功")
+        
+        # 重新创建视频捕获线程，以便下次启动时能够重新打开摄像头
+        try:
+            # 确定视频源:优先使用 RTSP URL,否则使用摄像头设备
+            video_source = self.settings.rtsp_url or self.settings.camera_device
+            if self.settings.simulate_camera:
+                video_source = None  # 模拟模式
+            self.capture_thread = VideoCaptureThread(
+                video_source,
+                self.capture_queue,
+                self.settings.capture_width,
+                self.settings.capture_height,
+                self.settings.capture_fps,
+            )
+            # 重新创建工作线程
+            self.inference_thread = threading.Thread(
+                target=self._inference_worker, daemon=True, name="InferenceThread"
+            )
+            self.tracker_thread = threading.Thread(
+                target=self._tracker_worker, daemon=True, name="TrackerThread"
+            )
+            self.logic_thread = threading.Thread(
+                target=self._logic_worker, daemon=True, name="LogicThread"
+            )
+            # 注意：模型资源会由垃圾回收器自动处理
+            # 由于模型在推理线程中创建，必须在该线程中清理
+            # 这里不进行显式清理，避免跨线程 CUDA 资源操作
+            self.model = None
+            self.tracker = None  # 重置跟踪器
+            self.logger.info("线程资源重新初始化完成")
+        except Exception as e:
+            self.logger.error(f"重新初始化线程资源时出错: {e}")
 
     def _inference_worker(self):
         """
@@ -461,64 +581,87 @@ class EdgePipeline:
         从捕获队列获取帧,使用 YOLO 模型进行姿态检测
         将检测结果放入推理队列供跟踪线程使用
         """
-        # 在此线程中加载模型以确保正确的 CUDA 上下文
-        if self.model is None:
-            try:
-                self.logger.info(f"加载 TRT 模型: {self.model_path}")
-                if Path(self.model_path).exists():
-                    self.model = YOLO(self.model_path)
-                    self.logger.info("TRT YOLO 模型加载成功")
-                else:
-                    self.logger.warning(f"模型文件不存在: {self.model_path}")
-            except Exception as e:
-                self.logger.error(f"加载 TRT 模型失败: {e}")
+        local_model = None
+        try:
+            # 在此线程中加载模型以确保正确的 CUDA 上下文
+            if self.model is None:
+                try:
+                    self.logger.info(f"加载 TRT 模型: {self.model_path}")
+                    if Path(self.model_path).exists():
+                        local_model = YOLO(self.model_path)
+                        self.model = local_model  # 赋值给实例变量
+                        self.logger.info("TRT YOLO 模型加载成功")
+                    else:
+                        self.logger.warning(f"模型文件不存在: {self.model_path}")
+                except Exception as e:
+                    self.logger.error(f"加载 TRT 模型失败: {e}")
 
-        while self.running:
-            try:
-                frame = self.capture_queue.get(timeout=1.0)
-            except queue.Empty:
-                continue
+            start_time = time.time()
+            while self.running:
+                try:
+                    frame = self.capture_queue.get(timeout=1.0)
+                except queue.Empty:
+                    # 每10秒打印一次日志，确认线程还在运行
+                    if time.time() - start_time > 10:
+                        self.logger.info("推理线程等待帧...")
+                        start_time = time.time()
+                    continue
 
-            if frame is None:
-                self.inference_queue.put(None)
-                break
+                if frame is None:
+                    self.logger.info("收到结束信号，退出推理线程")
+                    self.inference_queue.put(None)
+                    break
 
-            self.timer.start("2_inference")
-            try:
-                if self.model:
-                    # 执行模型推理
-                    outputs = self.model.infer(frame)
-                    # 转换输出格式为 Results
-                    boxes = np.zeros((len(outputs), 4), dtype=np.float32)
-                    cls = []
-                    confs = []
-                    keypoints = []
+                self.timer.start("2_inference")
+                try:
+                    if self.model:
+                        # 执行模型推理
+                        outputs = self.model.infer(frame)
+                        # 转换输出格式为 Results
+                        boxes = np.zeros((len(outputs), 4), dtype=np.float32)
+                        cls = []
+                        confs = []
+                        keypoints = []
 
-                    for i, output in enumerate(outputs):
-                        x1, y1, x2, y2 = output["bbox"]
-                        # 转换为 xywh 格式
-                        x = (x1 + x2) / 2
-                        y = (y1 + y2) / 2
-                        w = x2 - x1
-                        h = y2 - y1
-                        boxes[i] = [x, y, w, h]
-                        cls.append(output["class_id"])
-                        confs.append(output["score"])
-                        if "keypoints" in output:
-                            keypoints.append(output["keypoints"])
+                        for i, output in enumerate(outputs):
+                            x1, y1, x2, y2 = output["bbox"]
+                            # 转换为 xywh 格式
+                            x = (x1 + x2) / 2
+                            y = (y1 + y2) / 2
+                            w = x2 - x1
+                            h = y2 - y1
+                            boxes[i] = [x, y, w, h]
+                            cls.append(output["class_id"])
+                            confs.append(output["score"])
+                            if "keypoints" in output:
+                                keypoints.append(output["keypoints"])
 
-                    result = Results(
-                        frame, np.array(confs), boxes, np.array(cls), keypoints
-                    )
-                    self.inference_queue.put((frame, result))
-                else:
-                    # 模型未加载,传递空结果
-                    self.inference_queue.put((frame, Results(frame, [], [], [], [])))
+                        result = Results(
+                            frame, np.array(confs), boxes, np.array(cls), keypoints
+                        )
+                        self.inference_queue.put((frame, result))
+                    else:
+                        # 模型未加载,传递空结果
+                        self.inference_queue.put((frame, Results(frame, [], [], [], [])))
 
-            except Exception as e:
-                self.logger.error(f"推理错误: {e}")
-            finally:
-                self.timer.end("2_inference")
+                except Exception as e:
+                    self.logger.error(f"推理错误: {e}")
+
+                finally:
+                    self.timer.end("2_inference")
+        finally:
+            # 在线程结束时清理模型资源
+            if local_model is not None:
+                try:
+                    # 显式调用 YOLO 对象的 cleanup 方法清理 CUDA 资源
+                    if hasattr(local_model, 'cleanup'):
+                        local_model.cleanup()
+                    # 让垃圾回收器在当前线程中处理模型
+                    local_model = None
+                    self.model = None
+                    self.logger.info("推理线程模型资源清理完成")
+                except Exception as e:
+                    self.logger.warning(f"清理模型资源时出错: {e}")
 
     def _tracker_worker(self):
         """
@@ -527,12 +670,14 @@ class EdgePipeline:
         从推理队列获取检测结果,使用 BYTETracker 进行多目标跟踪
         保持跟踪ID一致性,将跟踪结果放入跟踪队列
         """
+        self.logger.info("启动跟踪线程")
+        frame_count = 0
         # 在此线程中初始化跟踪器
         try:
             self.tracker = BYTETracker(args=self.cfg, frame_rate=self.settings.capture_fps)
-            logger.info("BYTETracker 初始化成功")
+            self.logger.info("BYTETracker 初始化成功")
         except Exception as e:
-            logger.error(f"BYTETracker 初始化失败: {e}")
+            self.logger.error(f"BYTETracker 初始化失败: {e}")
             self.running = False
             return
 
@@ -540,19 +685,30 @@ class EdgePipeline:
             try:
                 item = self.inference_queue.get(timeout=1.0)
             except queue.Empty:
+                # 每10秒打印一次日志，确认线程还在运行
+                if time.time() % 10 < 0.1:
+                    self.logger.info("跟踪线程等待推理结果...")
                 continue
 
             if item is None:
+                self.logger.info("收到结束信号，退出跟踪线程")
                 self.tracking_queue.put(None)
                 break
 
             frame, result = item
+            frame_count += 1
+            # 每10帧打印一次跟踪日志，避免日志过多
+            if frame_count % 10 == 0:
+                self.logger.info("收到推理结果，开始跟踪")
             self.timer.start("3_tracking")
 
             try:
                 # 使用 BYTETracker 进行跟踪
                 # tracks 格式: [x1, y1, x2, y2, track_id, conf, cls, idx]
                 tracks = self.tracker.update(result, frame)
+                # 每10帧打印一次跟踪结果，避免日志过多
+                if frame_count % 10 == 0:
+                    self.logger.info(f"跟踪结果: {len(tracks)} 个目标")
                 
                 # 提取关键点,保持与 tracks 的对应关系
                 keypoints = []
@@ -571,10 +727,13 @@ class EdgePipeline:
                     tracker_result = TrackerResults(frame, np.array([]), [])
 
             except Exception as e:
-                logger.error(f"跟踪错误: {e}")
+                self.logger.error(f"跟踪错误: {e}")
                 tracker_result = TrackerResults(frame, [], [])
 
             self.timer.end("3_tracking")
+            # 每10帧打印一次跟踪完成日志，避免日志过多
+            if frame_count % 10 == 0:
+                self.logger.info("跟踪完成，放入跟踪队列")
             self.tracking_queue.put((frame, tracker_result))
 
     def _logic_worker(self):
@@ -584,8 +743,11 @@ class EdgePipeline:
         从跟踪队列获取跟踪结果,调用算法运行器进行处理
         负责可视化显示和性能统计
         """
+        # 简化逻辑，减少日志输出
         fps = 0.0
         prev_time = time.time()
+        frame_count = 0
+        window_created = False
 
         while self.running:
             try:
@@ -597,6 +759,7 @@ class EdgePipeline:
                 break
 
             frame, tracker_result = item
+            frame_count += 1
 
             # 计算 FPS
             curr_time = time.time()
@@ -619,26 +782,53 @@ class EdgePipeline:
 
             self.timer.end("4_business_logic")
 
-            # 可视化显示
+            # 可视化显示 - 优化版本
             if self.settings.display_preview:
-                self.timer.start("5_drawing")
-                annotated_frame = tracker_result.draw()
-                # 绘制 FPS
-                cv2.putText(
-                    annotated_frame,
-                    f"FPS: {fps:.1f}",
-                    (annotated_frame.shape[1] - 150, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (0, 255, 0),
-                    2,
-                )
+                while self.running:
+                    # 每2帧更新一次窗口，减少窗口更新频率
+                    if frame_count % 2 == 0:
+                        self.timer.start("5_drawing")
+                        try:
+                            annotated_frame = tracker_result.draw()
+                            # 绘制 FPS
+                            cv2.putText(
+                                annotated_frame,
+                                f"FPS: {fps:.1f}",
+                                (annotated_frame.shape[1] - 150, 40),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.9,
+                                (0, 255, 0),
+                                2,
+                            )
 
-                # 镜像显示(如果需要)
-                if self.settings.display_mirror:
-                    annotated_frame = cv2.flip(annotated_frame, 1)
+                            # 镜像显示(如果需要)
+                            if self.settings.display_mirror:
+                                annotated_frame = cv2.flip(annotated_frame, 1)
 
-                cv2.imshow("Edge Node Preview", annotated_frame)
-                if cv2.waitKey(1) & 0xFF == 27:  # ESC 键退出
-                    self.stop()
-                self.timer.end("5_drawing")
+                            # 确保窗口正确创建和调整大小
+                            if not window_created:
+                                # 确保所有窗口已关闭
+                                cv2.destroyAllWindows()
+                                # 创建新窗口
+                                cv2.namedWindow("Edge Node Preview", cv2.WINDOW_NORMAL)
+                                cv2.resizeWindow("Edge Node Preview", 1280, 720)
+                                window_created = True
+
+                            # 使用非阻塞显示
+                            cv2.imshow("Edge Node Preview", annotated_frame)
+                            # 非阻塞的 waitKey，只处理键盘事件，不等待
+                            key = cv2.waitKey(1) & 0xFF
+                            if key == 27:  # ESC 键退出
+                                self.stop()
+                        except Exception as e:
+                            # 只记录错误，不打印详细信息
+                            pass
+                        finally:
+                            self.timer.end("5_drawing")
+        
+        # 退出线程时关闭窗口
+        try:
+            cv2.destroyAllWindows()
+        except Exception as e:
+            # 只记录错误，不打印详细信息
+            pass

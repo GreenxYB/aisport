@@ -14,7 +14,6 @@ from typing import Dict
 
 import tensorrt as trt
 import pycuda.driver as cuda
-import pycuda.autoinit  # noqa: F401
 import torch
 from pycuda.compiler import SourceModule
 import numpy as np
@@ -89,13 +88,67 @@ class TRTYOLO:
             self.parray_gpu = cuda.mem_alloc(self.parray_size)
 
         except Exception as e:
-            self.context_gpu.pop()  # Restore context on exception
             raise e
 
     def __del__(self):
+        # 注意：CUDA 上下文清理由 EdgePipeline 的推理线程负责
+        # 析构函数中不进行任何 CUDA 上下文操作，避免跨线程问题
+        pass
+    
+    def cleanup(self):
+        """
+        显式清理 CUDA 资源
+        
+        应该在创建 TRTYOLO 对象的线程中调用
+        """
         # 清理 CUDA 上下文
-        if hasattr(self, 'context_gpu'):
-            self.context_gpu.pop()
+        if hasattr(self, 'context_gpu') and self.context_gpu is not None:
+            try:
+                # 确保在正确的线程中弹出上下文
+                current_context = cuda.Context.get_current()
+                if current_context is not None and current_context == self.context_gpu:
+                    self.context_gpu.pop()
+                self.context_gpu = None
+            except Exception as e:
+                # 忽略清理错误
+                pass
+        
+        # 清理其他 CUDA 资源
+        if hasattr(self, 'stream'):
+            try:
+                self.stream = None
+            except Exception:
+                pass
+        if hasattr(self, 'inputs'):
+            try:
+                self.inputs = None
+            except Exception:
+                pass
+        if hasattr(self, 'outputs'):
+            try:
+                self.outputs = None
+            except Exception:
+                pass
+        if hasattr(self, 'd2i_gpu'):
+            try:
+                self.d2i_gpu = None
+            except Exception:
+                pass
+        if hasattr(self, 'parray_gpu'):
+            try:
+                self.parray_gpu = None
+            except Exception:
+                pass
+        if hasattr(self, 'engine'):
+            try:
+                self.engine = None
+            except Exception:
+                pass
+        if hasattr(self, 'context'):
+            try:
+                self.context = None
+            except Exception:
+                pass
 
     def _load_cuda_kernels(self, cu_file):
         cu_file = os.path.join(os.path.dirname(__file__), cu_file)
@@ -394,13 +447,25 @@ def draw_detections(image, detections, class_names):
 
 
 class YOLO:
-    def __init__(self, engine_path, names_path):
+    def __init__(self, engine_path, names_path=None):
         self.done_warmup = False
-        self.id2name = self._load_names(names_path)
+        if names_path:
+            self.id2name = self._load_names(names_path)
+        else:
+            self.id2name = {0: 'person'}
         self.model = TRTYOLO(engine_path)
         self._lock = threading.Lock()
         self.callbacks = defaultdict(list)
         self.vid_writer = {}  # dict of {save_path: video_writer, ...}
+    
+    def cleanup(self):
+        """
+        清理 YOLO 模型资源
+        """
+        if hasattr(self, 'model') and self.model is not None:
+            if hasattr(self.model, 'cleanup'):
+                self.model.cleanup()
+            self.model = None
 
     def _load_names(self, names_path):
         with open(names_path, 'r') as f:
