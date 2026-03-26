@@ -1,7 +1,7 @@
 import json
 import time
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 import numpy as np
 
@@ -13,9 +13,10 @@ from .finish_line import FinishLineAlgo
 
 
 class AlgorithmRunner:
-    def __init__(self, state: NodeState):
+    def __init__(self, state: NodeState, publisher: Any = None):
         self.settings = get_settings()
         self.state = state
+        self.publisher = publisher
         self.face = FaceBindingAlgo()
         self.violation = ViolationAlgo(self.state)
         self.finish = FinishLineAlgo(self.state)
@@ -47,16 +48,22 @@ class AlgorithmRunner:
         for ev in events:
             ev.setdefault("node_id", self.state.node_id)
             ev.setdefault("session_id", self.state.session_id)
+            ev.setdefault("timestamp", int(ts_ms))
 
         if events:
             for ev in events:
                 if ev.get("msg_type") == "ID_REPORT":
                     self.state.last_face_result = ev
                     self.state.last_face_ts = int(ts_ms)
-                if ev.get("msg_type") == "VIOLATION_EVENT" and ev.get("event") == "FALSE_START":
-                    self.state.last_false_start_event = ev
-                    self.state.last_false_start_ts = int(ts_ms)
+                if ev.get("msg_type") == "VIOLATION_EVENT":
+                    data = ev.get("data") or []
+                    if data and isinstance(data, list):
+                        first_item = data[0]
+                        if isinstance(first_item, dict) and first_item.get("event") == "FALSE_START":
+                            self.state.last_false_start_event = first_item
+                            self.state.last_false_start_ts = int(ts_ms)
             self._append(events)
+            self._publish(events)
             self.state.algo_events_generated += len(events)
             self.state.last_algo_ts = int(ts_ms)
 
@@ -89,3 +96,12 @@ class AlgorithmRunner:
         with self._log_path.open("a", encoding="utf-8") as f:
             for ev in events:
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+    def _publish(self, events: List[Dict]) -> None:
+        if not self.publisher:
+            return
+        for ev in events:
+            try:
+                self.publisher.publish(ev)
+            except Exception:
+                pass

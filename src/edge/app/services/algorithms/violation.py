@@ -268,18 +268,22 @@ class ViolationAlgo:
                     events.append(
                         {
                             "msg_type": "VIOLATION_EVENT",
-                            "event": "FALSE_START",
-                            "lane": lane,
-                            "track_id": track_id,
-                            "class_id": class_id,
-                            "class_name": class_name,
-                            "score": self._extract_score(item),
-                            "bbox": self._extract_box(item),
-                            "keypoints": kps_item,
-                            "toe_proxy_points": toe_points,
                             "timestamp": current_time,
-                            "evidence_frame": None,
-                            "start_line_y": line_y,
+                            "data": [
+                                {
+                                    "event": "FALSE_START",
+                                    "lane": lane,
+                                    "track_id": track_id,
+                                    "class_id": class_id,
+                                    "class_name": class_name,
+                                    "score": self._extract_score(item),
+                                    "bbox": self._extract_box(item),
+                                    "keypoints": kps_item,
+                                    "toe_proxy_points": toe_points,
+                                    "evidence_frame": None,
+                                    "start_line_y": line_y,
+                                }
+                            ],
                         }
                     )
                     self._false_start_reported.add(lane)
@@ -312,16 +316,20 @@ class ViolationAlgo:
             events.append(
                 {
                     "msg_type": "VIOLATION_EVENT",
-                    "event": "LANE_DEVIATION",
-                    "lane": lane,
-                    "track_id": track_id,
-                    "class_id": class_id,
-                    "class_name": class_name,
-                    "score": self._extract_score(item),
-                    "bbox": self._extract_box(item),
-                    "keypoints": kps[idx] if idx < len(kps) else None,
                     "timestamp": current_time,
-                    "evidence_frame": None,
+                    "data": [
+                        {
+                            "event": "LANE_DEVIATION",
+                            "lane": lane,
+                            "track_id": track_id,
+                            "class_id": class_id,
+                            "class_name": class_name,
+                            "score": self._extract_score(item),
+                            "bbox": self._extract_box(item),
+                            "keypoints": kps[idx] if idx < len(kps) else None,
+                            "evidence_frame": None,
+                        }
+                    ],
                 }
             )
 

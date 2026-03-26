@@ -37,8 +37,20 @@ def create_app() -> FastAPI:
     def _startup() -> None:
         # Initialize handler on startup to auto-open camera
         from .routers.commands import get_handler
+        from .services.ws_client import get_ws_client
 
-        get_handler()
+        handler = get_handler()
+        if handler.settings.ws_enabled:
+            get_ws_client(handler).start()
+
+    @app.on_event("shutdown")
+    def _shutdown() -> None:
+        from .routers.commands import get_handler
+        from .services.ws_client import get_ws_client
+
+        handler = get_handler()
+        if handler.settings.ws_enabled:
+            get_ws_client(handler).stop()
 
     return app
 

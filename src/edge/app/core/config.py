@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     node_id: int = Field(1, description="Edge node numeric ID")
     command_poll_interval_ms: int = 500
     cloud_api_base: str = Field("http://localhost:8000", description="Cloud endpoint")
+    cloud_ws_url: str = Field("ws://localhost:8000/nodes/ws", description="Cloud websocket endpoint")
     camera_device: str = Field("0", description="Camera device index/path or RTSP URL")
     rtsp_url: str = Field("", description="Optional RTSP URL; overrides camera_device when set")
     simulate_camera: bool = Field(
@@ -19,6 +20,12 @@ class Settings(BaseSettings):
     auto_start_capture: bool = Field(
         True, description="Start camera capture on service startup"
     )
+    ws_enabled: bool = Field(False, description="Enable persistent websocket link to cloud")
+    node_role: str = Field("START", description="Node role: START/FINISH/MID/ALL_IN_ONE")
+    site_id: str = Field("local-dev", description="Logical site identifier")
+    node_capabilities: str = Field("camera,speaker", description="Comma separated capability list")
+    ws_reconnect_interval_sec: float = Field(3.0, description="Websocket reconnect interval seconds")
+    ws_status_interval_sec: float = Field(2.0, description="Periodic status report interval seconds")
     display_preview: bool = Field(
         True,
         description="Show cv2.imshow live preview by default (requires GUI session)",
@@ -29,7 +36,7 @@ class Settings(BaseSettings):
     display_mirror: bool = Field(
         False, description="Mirror preview display and snapshot horizontally"
     )
-    capture_fps: int = Field(15, description="Target capture FPS")
+    capture_fps: int = Field(30, description="Target capture FPS")
     capture_width: int = Field(1280, description="Capture width")
     capture_height: int = Field(640, description="Capture height")
     model_dir: str = Field("./data/models", description="Model directory")

@@ -1,5 +1,7 @@
 import pathlib
 import sys
+import numpy as np
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -143,3 +145,85 @@ def test_full_workflow():
     assert resp.status_code == 200
     status = client.get("/status").json()
     assert status["phase"] == "STOPPED"
+
+
+def test_reset_round_keeps_bindings_and_returns_to_binding():
+    client = build_client()
+
+    client.post(
+        "/commands",
+        json={
+            "cmd": "CMD_INIT",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "task_mode": "TRACK_RACE",
+            "config": {"lane_count": 8},
+        },
+    )
+    client.post(
+        "/commands",
+        json={
+            "cmd": "CMD_BINDING_SYNC",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "config": {"bindings": [{"lane": 1, "student_id": "S101"}]},
+        },
+    )
+    client.post(
+        "/commands",
+        json={
+            "cmd": "CMD_START_MONITOR",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "config": {"expected_start_time": 1000},
+        },
+    )
+
+    resp = client.post(
+        "/commands",
+        json={
+            "cmd": "CMD_RESET_ROUND",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "config": {"reason": "FALSE_START"},
+        },
+    )
+    assert resp.status_code == 200
+
+    status = client.get("/status").json()
+    assert status["phase"] == "BINDING"
+    assert status["bindings"] == [{"lane": 1, "student_id": "S101"}]
+    assert status["expected_start_time"] is None
+
+
+def test_preview_snapshot_uses_pipeline_cache():
+    client = build_client()
+    handler = get_handler()
+    handler.pipeline.snapshot_jpeg = lambda: b"fake-jpeg"
+    handler.pipeline.last_encode_error = lambda: None
+
+    resp = client.get("/preview/snapshot")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert resp.content == b"fake-jpeg"
+
+
+def test_results_boolean_mask_keeps_lengths_aligned():
+    Results = pytest.importorskip("edge.app.services.pipeline").Results
+    frame = [[0]]
+    result = Results(
+        orig_img=frame,
+        confs=[0.9, 0.8, 0.7],
+        boxes=[[1, 1, 2, 2], [3, 3, 4, 4], [5, 5, 6, 6]],
+        cls=[0, 0, 0],
+        keypoints=[["a"], ["b"], ["c"]],
+    )
+
+    subset = result[np.array([True, False, True])]
+
+    assert len(subset.confs) == 2
+    assert len(subset.boxes) == 2
+    assert len(subset.cls) == 2
+    assert len(subset.keypoints) == 2
+    assert subset.keypoints == [["a"], ["c"]]

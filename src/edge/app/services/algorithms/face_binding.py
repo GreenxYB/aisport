@@ -40,8 +40,8 @@ class FaceBindingAlgo:
             return []
         event = {
             "msg_type": "ID_REPORT",
-            "results": results,
             "timestamp": int(ts_ms),
+            "data": results,
         }
         return [event]
 

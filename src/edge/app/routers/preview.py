@@ -8,9 +8,9 @@ router = APIRouter()
 
 @router.get("/snapshot", responses={200: {"content": {"image/jpeg": {}}}})
 def snapshot(handler: CommandHandler = Depends(get_handler)):
-    jpeg = handler.capture.snapshot_jpeg()
+    jpeg = handler.pipeline.snapshot_jpeg()
     if not jpeg:
-        err = handler.capture.last_encode_error()
+        err = handler.pipeline.last_encode_error()
         detail = "No frame available yet"
         if err:
             detail = f"No frame available yet: {err}"

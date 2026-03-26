@@ -6,12 +6,37 @@ from typing import Callable
 
 from fastapi import HTTPException
 
-from common.protocol import CommandPayload
-from .core.config import get_settings
+from common.protocol import CommandPayload, NodeStatusReport
+from ..core.config import get_settings
 from ..core.state import NodePhase, NodeState
-from .pipeline import EdgePipeline
 from .event_simulator import EventSimulator
 from .algorithms import AlgorithmRunner
+from .publisher import NullPublisher
+
+try:
+    from .pipeline import EdgePipeline
+except Exception as exc:  # pragma: no cover
+    EdgePipeline = None
+    PIPELINE_IMPORT_ERROR = exc
+else:
+    PIPELINE_IMPORT_ERROR = None
+
+
+class _NoopPipeline:
+    def __init__(self):
+        self.running = False
+
+    def start(self) -> None:
+        self.running = True
+
+    def stop(self) -> None:
+        self.running = False
+
+    def snapshot_jpeg(self) -> bytes | None:
+        return None
+
+    def last_encode_error(self) -> str | None:
+        return None
 
 
 class CommandHandler:
@@ -34,15 +59,20 @@ class CommandHandler:
         # 加载或创建初始状态
         self.state = self._load_state()
         self.logger = logging.getLogger("edge.command")
+        self.publisher = NullPublisher()
 
         # 初始化事件模拟器 - 用于测试生成模拟事件
-        self.event_sim = EventSimulator(self.state)
+        self.event_sim = EventSimulator(self.state, publisher=self.publisher)
         # 初始化算法运行器 - 处理视频帧并检测事件
-        self.algo = AlgorithmRunner(self.state)
+        self.algo = AlgorithmRunner(self.state, publisher=self.publisher)
 
         # 使用 EdgePipeline 进行多线程视频处理
         # 包含: 视频采集 -> YOLO推理 -> 目标跟踪 -> 业务逻辑
-        self.pipeline = EdgePipeline(algo_runner=self.algo)
+        if EdgePipeline is None:
+            self.pipeline = _NoopPipeline()
+            self.logger.warning("EdgePipeline unavailable, falling back to no-op pipeline: %s", PIPELINE_IMPORT_ERROR)
+        else:
+            self.pipeline = EdgePipeline(algo_runner=self.algo)
 
         # 如果配置了自动启动采集,则启动视频处理管道
         if self.settings.auto_start_capture:
@@ -56,6 +86,7 @@ class CommandHandler:
             "CMD_BINDING_SYNC",  # 同步运动员绑定信息
             "CMD_START_MONITOR",  # 开始监控/检测
             "CMD_STOP",  # 停止监控
+            "CMD_RESET_ROUND",  # 违规后重置当前轮次
             "CMD_HEARTBEAT",  # 心跳检测
         }
         # 命令分发映射表 - 将命令映射到对应的处理方法
@@ -64,6 +95,7 @@ class CommandHandler:
             "CMD_BINDING_SYNC": self._handle_binding_sync,
             "CMD_START_MONITOR": self._handle_start_monitor,
             "CMD_STOP": self._handle_stop,
+            "CMD_RESET_ROUND": self._handle_reset_round,
             "CMD_HEARTBEAT": self._handle_heartbeat,
         }
 
@@ -221,6 +253,28 @@ class CommandHandler:
         self.event_sim.stop()
         self._touch(payload.cmd)
 
+    def _handle_reset_round(self, payload: CommandPayload) -> None:
+        """
+        处理轮次重置命令。
+
+        保留绑定信息，将节点恢复到等待重新起跑的准备态，
+        适用于抢跑等违规后的快速重开。
+        """
+        self._ensure_same_session(payload)
+        self._ensure_phase([NodePhase.BINDING, NodePhase.MONITORING, NodePhase.STOPPED])
+
+        self.state.phase = NodePhase.BINDING
+        self.state.expected_start_time = None
+        self.state.stop_reason = None
+        self.state.config["tracking_active"] = False
+        self.state.last_false_start_event = None
+        self.state.last_false_start_ts = None
+        self.state.last_toe_proxy_debug = None
+        self.state.last_toe_proxy_ts = None
+
+        self.event_sim.stop()
+        self._touch(payload.cmd)
+
     def _handle_heartbeat(self, payload: CommandPayload) -> None:
         """
         处理心跳命令 - 保持会话活跃
@@ -275,6 +329,31 @@ class CommandHandler:
         """
         self.state.last_command = cmd
         self.state.last_updated_ms = int(time.time() * 1000)
+
+
+    def build_status_report(self) -> NodeStatusReport:
+        return NodeStatusReport(
+            node_id=self.state.node_id,
+            session_id=self.state.session_id or "",
+            timestamp=int(time.time() * 1000),
+            data={
+                "phase": self.state.phase.value,
+                "last_command": self.state.last_command,
+                "capture_running": self.state.capture_running,
+                "capture_fps_est": self.state.capture_fps_est,
+                "last_frame_ts": self.state.last_frame_ts,
+                "capture_error": self.state.capture_error,
+                "binding_ready": bool(self.state.bindings),
+                "camera_ready": self.state.capture_running and not self.state.capture_error,
+                "tracking_active": bool(self.state.config.get("tracking_active", False)),
+                "node_role": self.settings.node_role,
+            },
+        )
+
+    def set_publisher(self, publisher) -> None:
+        self.publisher = publisher
+        self.event_sim.publisher = publisher
+        self.algo.publisher = publisher
 
     def snapshot(self) -> dict:
         """

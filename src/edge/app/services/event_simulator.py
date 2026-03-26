@@ -5,16 +5,17 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from ..core.config import get_settings
 from ..core.state import NodeState
 
 
 class EventSimulator:
-    def __init__(self, state: NodeState):
+    def __init__(self, state: NodeState, publisher: Any = None):
         self.settings = get_settings()
         self.state = state
+        self.publisher = publisher
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._log_path = Path(__file__).resolve().parents[4] / "logs" / "events.jsonl"
@@ -53,10 +54,14 @@ class EventSimulator:
                 "msg_type": "VIOLATION_EVENT",
                 "node_id": self.state.node_id,
                 "session_id": session_id,
-                "event": random.choice(["FALSE_START", "LANE_DEVIATION"]),
-                "lane": random.randint(1, lanes),
                 "timestamp": ts_ms,
-                "evidence_frame": None,
+                "data": [
+                    {
+                        "event": random.choice(["FALSE_START", "LANE_DEVIATION"]),
+                        "lane": random.randint(1, lanes),
+                        "evidence_frame": None,
+                    }
+                ],
             }
             self._append(event)
             self._report(event)
@@ -69,7 +74,8 @@ class EventSimulator:
                     "msg_type": "FINISH_REPORT",
                     "node_id": self.state.node_id,
                     "session_id": session_id,
-                    "results": [
+                    "timestamp": ts_ms,
+                    "data": [
                         {"lane": lane, "finish_ts": ts_ms + random.randint(1000, 5000)}
                         for lane in range(1, lanes + 1)
                     ],
@@ -87,6 +93,14 @@ class EventSimulator:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _report(self, event: dict) -> None:
+        if self.publisher:
+            try:
+                ok = self.publisher.publish(event)
+            except Exception:
+                ok = False
+            if ok:
+                self.state.reports_sent += 1
+                return
         if not self.settings.report_enabled:
             return
         ok = self._send(event)

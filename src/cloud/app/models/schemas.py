@@ -2,7 +2,12 @@ from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
-from common.protocol import CommandPayload, ViolationReport, FinishReport  # type: ignore
+from common.protocol import (  # type: ignore
+    CommandPayload,
+    FinishReport,
+    NodeStatusReport,
+    ViolationReport,
+)
 
 
 class SessionCreate(BaseModel):
@@ -22,3 +27,13 @@ class Session(BaseModel):
     created_at: datetime
     project_type: str
     lane_count: int
+    start_node_id: int
+    finish_node_id: int
+    tracking_node_ids: List[int] = Field(default_factory=list)
+
+
+class StartMonitorRequest(BaseModel):
+    expected_start_time: int
+    countdown_seconds: int = 3
+    tracking_active: bool = True
+    audio_plan: str = "START_321_GO"

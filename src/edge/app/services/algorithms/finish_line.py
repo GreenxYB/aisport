@@ -94,7 +94,8 @@ class FinishLineAlgo:
             return None
         return {
             "msg_type": "FINISH_REPORT",
-            "results": results,
+            "timestamp": current_time,
+            "data": results,
             "line_y": line_y,
         }
 

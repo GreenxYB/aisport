@@ -174,7 +174,7 @@ def process_video(
             line_y_override=line_y,
         )
         if finish_report:
-            for item in finish_report.get("results", []):
+            for item in finish_report.get("data", []):
                 track_id = int(item.get("track_id", -1))
                 if track_id < 0:
                     continue
