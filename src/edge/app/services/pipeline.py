@@ -15,7 +15,7 @@ from ultralytics.utils.checks import check_yaml
 
 from ..core.config import get_settings
 from .algorithms.violation import extract_ultralytics_dets
-from .algorithms.lane_layout import binding_target_lanes, build_lane_shapes
+from .algorithms.lane_layout import available_lane_targets, build_lane_shapes
 
 # 获取 logger 实例
 logger = logging.getLogger("edge.pipeline")
@@ -476,7 +476,13 @@ class EdgePipeline:
         lane_count = 0
         if state is not None:
             lane_count = int(state.config.get("lane_count", 0) or 0)
-        target_lanes = binding_target_lanes(bindings, lane_count)
+        target_lanes = available_lane_targets(
+            bindings,
+            lane_count,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
         shapes = build_lane_shapes(
             frame_width=frame.shape[1],
             frame_height=frame.shape[0],

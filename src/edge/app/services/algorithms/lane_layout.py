@@ -22,6 +22,30 @@ def _clamp_point(x: float, y: float, frame_width: int, frame_height: int) -> Tup
     return xi, yi
 
 
+def _resolve_layout_path(lane_layout_file: str) -> Optional[Path]:
+    if not lane_layout_file:
+        return None
+    path = Path(str(lane_layout_file))
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path
+
+
+def _load_lane_layout_payload(lane_layout_file: str) -> Optional[Dict[str, Any]]:
+    path = _resolve_layout_path(lane_layout_file)
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, list):
+        return {"lanes": payload}
+    return None
+
+
 def parse_lane_polygons(
     lane_polygons_text: str,
     frame_width: int,
@@ -92,18 +116,13 @@ def load_lane_polygons_from_file(
     frame_width: int,
     frame_height: int,
 ) -> Dict[int, List[Tuple[int, int]]]:
-    if not lane_layout_file:
+    payload = _load_lane_layout_payload(lane_layout_file)
+    if payload is None:
         return {}
-    path = Path(str(lane_layout_file))
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
+    src_width = int(payload.get("frame_width") or frame_width or 1)
+    src_height = int(payload.get("frame_height") or frame_height or 1)
+    scale_x = frame_width / max(src_width, 1)
+    scale_y = frame_height / max(src_height, 1)
     lanes = payload.get("lanes") if isinstance(payload, dict) else payload
     if not isinstance(lanes, list):
         return {}
@@ -120,10 +139,40 @@ def load_lane_polygons_from_file(
         for point in points:
             if not isinstance(point, (list, tuple)) or len(point) < 2:
                 continue
-            normalized.append(_clamp_point(point[0], point[1], frame_width, frame_height))
+            normalized.append(
+                _clamp_point(float(point[0]) * scale_x, float(point[1]) * scale_y, frame_width, frame_height)
+            )
         if len(normalized) >= 3:
             polygons[lane] = normalized
     return polygons
+
+
+def available_lane_targets(
+    bindings: List[Dict[str, Any]],
+    lane_count: int,
+    lane_ranges_text: str = "",
+    lane_polygons_text: str = "",
+    lane_layout_file: str = "",
+) -> List[int]:
+    payload = _load_lane_layout_payload(lane_layout_file)
+    if payload and isinstance(payload.get("lanes"), list):
+        lanes = [
+            int(item.get("lane"))
+            for item in payload["lanes"]
+            if isinstance(item, dict) and isinstance(item.get("lane"), int)
+        ]
+        if lanes:
+            return sorted(dict.fromkeys(lanes))
+
+    polygons = parse_lane_polygons(lane_polygons_text, 1280, 640)
+    if polygons:
+        return sorted(polygons)
+
+    ranges = parse_lane_ranges(lane_ranges_text, 1280)
+    if ranges:
+        return sorted(ranges)
+
+    return binding_target_lanes(bindings, lane_count)
 
 
 def inspect_lane_layout(
@@ -145,19 +194,23 @@ def inspect_lane_layout(
     }
 
     if lane_layout_file:
-        path = Path(str(lane_layout_file))
-        if not path.is_absolute():
-            path = Path.cwd() / path
+        path = _resolve_layout_path(lane_layout_file)
         info["file"] = str(path)
         if not path.exists():
             info["warning"] = f"lane layout file not found: {path}"
             return info
+        payload = _load_lane_layout_payload(str(path)) or {}
+        file_width = payload.get("frame_width")
+        file_height = payload.get("frame_height")
         polygons = load_lane_polygons_from_file(str(path), frame_width, frame_height)
         covered = sorted(lane for lane in target_lanes if lane in polygons)
         info["source"] = "file"
         info["covered_lanes"] = covered
         info["available"] = bool(polygons)
         info["calibrated"] = bool(polygons)
+        info["runtime_frame"] = [frame_width, frame_height]
+        info["file_frame"] = [file_width, file_height] if file_width and file_height else None
+        info["scaled"] = bool(file_width and file_height and (int(file_width) != frame_width or int(file_height) != frame_height))
         if not polygons:
             info["warning"] = f"lane layout file has no valid polygons: {path}"
         elif covered != sorted(target_lanes):

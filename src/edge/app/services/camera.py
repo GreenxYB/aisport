@@ -13,7 +13,7 @@ except ImportError as exc:
 
 from ..core.config import get_settings
 from ..core.state import NodeState
-from .algorithms.lane_layout import binding_target_lanes, build_lane_shapes
+from .algorithms.lane_layout import available_lane_targets, build_lane_shapes
 
 
 FrameCallback = Callable[[np.ndarray, float], None]  # frame, ts_ms
@@ -419,7 +419,13 @@ class CaptureManager:
             return
         lane_count = int(self.state.config.get("lane_count", 0) or 0) if self.state else 0
         bindings = self.state.bindings if self.state else []
-        target_lanes = binding_target_lanes(bindings, lane_count)
+        target_lanes = available_lane_targets(
+            bindings,
+            lane_count,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
         shapes = build_lane_shapes(
             frame_width=preview.shape[1],
             frame_height=preview.shape[0],
