@@ -431,6 +431,8 @@ class CommandHandler:
                 "binding_assignments": self.state.binding_assignments,
                 "binding_confirmed_at_ms": self.state.binding_confirmed_at_ms,
                 "last_face_ts": self.state.last_face_ts,
+                "lane_layout_debug": self.state.lane_layout_debug,
+                "last_lane_observation_ts": self.state.last_lane_observation_ts,
                 "camera_ready": self.state.capture_running and not self.state.capture_error,
                 "tracking_active": bool(self.state.config.get("tracking_active", False)),
                 "expected_start_time": self.state.expected_start_time,

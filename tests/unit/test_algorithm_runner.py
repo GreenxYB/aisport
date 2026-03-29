@@ -64,6 +64,8 @@ def test_start_node_pipeline_runs_face_binding_and_false_start(monkeypatch):
     assert "VIOLATION_EVENT" in msg_types
     assert called["track_ids"] == [7]
     assert called["boxes"][0]["bbox"] == [10.0, 20.0, 30.0, 40.0]
+    assert state.lane_layout_debug is not None
+    assert state.lane_layout_debug["observations"][0]["lane"] == 1
 
     get_settings.cache_clear()
 
