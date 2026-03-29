@@ -260,14 +260,29 @@ async def get_session_diagnostics(
 
     online_nodes = {row["node_id"]: row for row in await manager.list_online()}
     required_nodes = []
+    warnings: list[dict] = []
     for node_id in svc.node_ids(session):
         row = online_nodes.get(node_id, {})
+        last_status = row.get("last_status")
+        status_data = (last_status or {}).get("data", {})
+        lane_layout_status = status_data.get("lane_layout_status") if isinstance(status_data, dict) else None
+        if isinstance(lane_layout_status, dict) and lane_layout_status.get("warning"):
+            warnings.append(
+                {
+                    "node_id": node_id,
+                    "node_role": row.get("node_role"),
+                    "type": "LANE_LAYOUT",
+                    "message": lane_layout_status.get("warning"),
+                    "source": lane_layout_status.get("source"),
+                    "file": lane_layout_status.get("file"),
+                }
+            )
         required_nodes.append(
             {
                 "node_id": node_id,
                 "node_role": row.get("node_role"),
                 "online": bool(row.get("online")),
-                "last_status": row.get("last_status"),
+                "last_status": last_status,
                 "last_ack": row.get("last_ack"),
                 "last_id_report": row.get("last_id_report"),
                 "last_violation": row.get("last_violation"),
@@ -280,5 +295,6 @@ async def get_session_diagnostics(
         "workflow": workflow,
         "readiness": readiness,
         "results": results,
+        "warnings": warnings,
         "nodes": required_nodes,
     }

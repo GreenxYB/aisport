@@ -126,6 +126,71 @@ def load_lane_polygons_from_file(
     return polygons
 
 
+def inspect_lane_layout(
+    *,
+    frame_width: int,
+    frame_height: int,
+    target_lanes: List[int],
+    lane_ranges_text: str = "",
+    lane_polygons_text: str = "",
+    lane_layout_file: str = "",
+) -> Dict[str, Any]:
+    info: Dict[str, Any] = {
+        "target_lanes": list(target_lanes),
+        "source": "auto",
+        "calibrated": False,
+        "available": False,
+        "warning": None,
+        "file": lane_layout_file or None,
+    }
+
+    if lane_layout_file:
+        path = Path(str(lane_layout_file))
+        if not path.is_absolute():
+            path = Path.cwd() / path
+        info["file"] = str(path)
+        if not path.exists():
+            info["warning"] = f"lane layout file not found: {path}"
+            return info
+        polygons = load_lane_polygons_from_file(str(path), frame_width, frame_height)
+        covered = sorted(lane for lane in target_lanes if lane in polygons)
+        info["source"] = "file"
+        info["covered_lanes"] = covered
+        info["available"] = bool(polygons)
+        info["calibrated"] = bool(polygons)
+        if not polygons:
+            info["warning"] = f"lane layout file has no valid polygons: {path}"
+        elif covered != sorted(target_lanes):
+            missing = [lane for lane in target_lanes if lane not in polygons]
+            info["warning"] = f"lane layout file missing lanes: {missing}"
+        return info
+
+    polygons = parse_lane_polygons(lane_polygons_text, frame_width, frame_height)
+    if polygons:
+        info["source"] = "inline_polygon"
+        info["available"] = True
+        info["calibrated"] = True
+        info["covered_lanes"] = sorted(lane for lane in target_lanes if lane in polygons)
+        if info["covered_lanes"] != sorted(target_lanes):
+            missing = [lane for lane in target_lanes if lane not in polygons]
+            info["warning"] = f"inline lane polygons missing lanes: {missing}"
+        return info
+
+    ranges = parse_lane_ranges(lane_ranges_text, frame_width)
+    if ranges:
+        info["source"] = "x_ranges"
+        info["available"] = True
+        info["calibrated"] = True
+        info["covered_lanes"] = sorted(lane for lane in target_lanes if lane in ranges)
+        if info["covered_lanes"] != sorted(target_lanes):
+            missing = [lane for lane in target_lanes if lane not in ranges]
+            info["warning"] = f"lane x ranges missing lanes: {missing}"
+        return info
+
+    info["warning"] = "lane layout missing; using equal-width fallback"
+    return info
+
+
 def parse_lane_ranges(lane_ranges_text: str, frame_width: int) -> Dict[int, tuple[int, int]]:
     ranges: Dict[int, tuple[int, int]] = {}
     if not lane_ranges_text:
