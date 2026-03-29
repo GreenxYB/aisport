@@ -34,7 +34,9 @@ def test_start_node_pipeline_runs_face_binding_and_false_start(monkeypatch):
     state.config["tracking_active"] = True
 
     runner = AlgorithmRunner(state)
-    runner.face.process = lambda frame, ts_ms: [{"msg_type": "ID_REPORT", "data": [{"student_id": "S101"}]}]
+    runner.face.process_candidates = lambda candidates, ts_ms: [
+        {"msg_type": "ID_REPORT", "data": [{"lane": 1, "student_id": "S101"}]}
+    ]
     runner.finish.process_detections = lambda **kwargs: None
 
     called = {}
@@ -86,7 +88,7 @@ def test_finish_node_pipeline_only_emits_finish_report(monkeypatch):
     def unexpected_violation(*args, **kwargs):
         raise AssertionError("finish node should not call violation logic")
 
-    runner.face.process = unexpected_face
+    runner.face.process_candidates = unexpected_face
     runner.violation.process_frame_logic = unexpected_violation
     runner.finish.process_detections = lambda **kwargs: {
         "msg_type": "FINISH_REPORT",

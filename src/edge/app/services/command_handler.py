@@ -163,6 +163,8 @@ class CommandHandler:
         self.state.finish_reports_generated = 0
         self.state.last_finish_ts = None
         self.state.binding_confirmed_students = []
+        self.state.binding_confirmed_lanes = []
+        self.state.binding_assignments = []
         self.state.binding_confirmed_at_ms = None
         self.state.last_face_result = None
         self.state.last_face_ts = None
@@ -275,6 +277,8 @@ class CommandHandler:
         self.state.stop_reason = None
         self.state.config["tracking_active"] = False
         self.state.binding_confirmed_students = []
+        self.state.binding_confirmed_lanes = []
+        self.state.binding_assignments = []
         self.state.binding_confirmed_at_ms = None
         self.state.last_face_result = None
         self.state.last_face_ts = None
@@ -364,19 +368,32 @@ class CommandHandler:
         return "-"
 
     def build_status_report(self) -> NodeStatusReport:
+        binding_target_lanes = [
+            int(item.get("lane"))
+            for item in self.state.bindings
+            if isinstance(item, dict) and isinstance(item.get("lane"), int)
+        ]
+        if not binding_target_lanes:
+            lane_count = int(self.state.config.get("lane_count", 0) or 0)
+            binding_target_lanes = list(range(1, lane_count + 1))
+
         binding_target_students = [
             str(item.get("student_id"))
             for item in self.state.bindings
             if isinstance(item, dict) and item.get("student_id")
         ]
         confirmed_students = list(dict.fromkeys(self.state.binding_confirmed_students))
+        confirmed_lanes = list(dict.fromkeys(self.state.binding_confirmed_lanes))
         pending_students = [
-            student_id
-            for student_id in binding_target_students
-            if student_id not in confirmed_students
+            student_id for student_id in binding_target_students if student_id not in confirmed_students
+        ]
+        pending_lanes = [
+            lane for lane in binding_target_lanes if lane not in confirmed_lanes
         ]
         binding_required = bool(binding_target_students) and self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}
-        binding_ready = (not binding_required) or not pending_students
+        if self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}:
+            binding_required = bool(binding_target_lanes)
+        binding_ready = (not binding_required) or not pending_lanes
         now_ms = int(time.time() * 1000)
         session_stage = self.state.phase.value
         if self.state.phase == NodePhase.BINDING:
@@ -403,11 +420,15 @@ class CommandHandler:
                 "capture_error": self.state.capture_error,
                 "binding_required": binding_required,
                 "binding_ready": binding_ready,
-                "binding_target_count": len(binding_target_students),
-                "binding_confirmed_count": len(confirmed_students),
-                "binding_pending_count": len(pending_students),
+                "binding_target_count": len(binding_target_lanes),
+                "binding_target_lanes": binding_target_lanes,
+                "binding_confirmed_count": len(confirmed_lanes),
+                "binding_confirmed_lanes": confirmed_lanes,
+                "binding_pending_count": len(pending_lanes),
+                "binding_pending_lanes": pending_lanes,
                 "binding_confirmed_students": confirmed_students,
                 "binding_pending_students": pending_students,
+                "binding_assignments": self.state.binding_assignments,
                 "binding_confirmed_at_ms": self.state.binding_confirmed_at_ms,
                 "last_face_ts": self.state.last_face_ts,
                 "camera_ready": self.state.capture_running and not self.state.capture_error,

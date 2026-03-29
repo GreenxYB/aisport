@@ -230,6 +230,11 @@ def test_status_binding_ready_requires_real_face_confirmation():
     assert status["data"]["binding_confirmed_count"] == 0
 
     handler.state.binding_confirmed_students = ["S101", "S102"]
+    handler.state.binding_confirmed_lanes = [1, 2]
+    handler.state.binding_assignments = [
+        {"lane": 1, "student_id": "S101"},
+        {"lane": 2, "student_id": "S102"},
+    ]
     handler.state.binding_confirmed_at_ms = 1234567890
     status = handler.build_status_report().model_dump()
     assert status["data"]["binding_ready"] is True

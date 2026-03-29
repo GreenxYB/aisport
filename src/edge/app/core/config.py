@@ -41,11 +41,11 @@ class Settings(BaseSettings):
     capture_height: int = Field(640, description="Capture height")
     model_dir: str = Field("./data/models", description="Model directory")
     simulate_events: bool = Field(
-        True, description="Generate simulated events during monitoring"
+        False, description="Generate simulated events during monitoring"
     )
     event_interval_sec: float = Field(2.0, description="Simulated event interval seconds")
     simulate_finish_reports: bool = Field(
-        True, description="Generate simulated finish reports during monitoring"
+        False, description="Generate simulated finish reports during monitoring"
     )
     finish_interval_sec: float = Field(8.0, description="Simulated finish report interval seconds")
     report_enabled: bool = Field(

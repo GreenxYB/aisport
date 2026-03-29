@@ -155,6 +155,12 @@ async def get_session_results(
         raise HTTPException(status_code=404, detail="Session not found")
 
     reports = await manager.get_session_reports(session_id)
+    id_by_lane: dict[int, dict] = {}
+    for report in reports["id_reports"]:
+        for item in report.get("data") or []:
+            lane = item.get("lane")
+            if isinstance(lane, int):
+                id_by_lane[lane] = item
     bindings_by_lane = {
         int(item["lane"]): item
         for item in session.bindings
@@ -184,6 +190,7 @@ async def get_session_results(
     results = []
     for lane in lanes:
         binding = bindings_by_lane.get(lane, {})
+        recognized = id_by_lane.get(lane, {})
         finish = latest_finish_by_lane.get(lane)
         false_start = false_start_by_lane.get(lane)
         finish_ts = int(finish["finish_ts"]) if finish and finish.get("finish_ts") is not None else None
@@ -193,8 +200,10 @@ async def get_session_results(
         results.append(
             {
                 "lane": lane,
-                "student_id": binding.get("student_id"),
+                "student_id": recognized.get("student_id") or binding.get("student_id"),
                 "feature_id": binding.get("feature_id"),
+                "recognized_name": recognized.get("name"),
+                "recognized_confidence": recognized.get("confidence"),
                 "finish_ts": finish_ts,
                 "expected_start_time": session.expected_start_time,
                 "elapsed_ms": elapsed_ms,

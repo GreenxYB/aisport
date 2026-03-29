@@ -85,7 +85,7 @@ class AlgorithmRunner:
         events: List[Dict] = []
 
         if role in {"START", "ALL_IN_ONE"}:
-            events.extend(self._run_face_binding(frame, ts_ms))
+            events.extend(self._run_face_binding(frame, ts_ms, dets))
 
         if self.state.phase == NodePhase.MONITORING and role in {"START", "ALL_IN_ONE"}:
             events.extend(
@@ -110,7 +110,7 @@ class AlgorithmRunner:
 
         return events
 
-    def _run_face_binding(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
+    def _run_face_binding(self, frame: np.ndarray, ts_ms: float, dets: List[Dict]) -> List[Dict]:
         expected_start = self.state.expected_start_time
         in_binding_window = self.state.phase == NodePhase.BINDING or (
             self.state.phase == NodePhase.MONITORING
@@ -125,7 +125,12 @@ class AlgorithmRunner:
         if self._last_face_report_ms is not None and now_ms - self._last_face_report_ms < interval_ms:
             return []
 
-        events = self.face.process(frame, ts_ms)
+        lane_targets = self._binding_target_lanes()
+        candidates = self._build_face_candidates(frame, dets, lane_targets)
+        if not candidates:
+            return []
+
+        events = self.face.process_candidates(candidates, ts_ms)
         if not events:
             return []
 
@@ -136,6 +141,46 @@ class AlgorithmRunner:
         self._last_face_signature = signature
         self._last_face_report_ms = now_ms
         return events
+
+    def _binding_target_lanes(self) -> List[int]:
+        lanes = [
+            int(item.get("lane"))
+            for item in self.state.bindings
+            if isinstance(item, dict) and isinstance(item.get("lane"), int)
+        ]
+        if lanes:
+            return sorted(dict.fromkeys(lanes))
+        lane_count = int(self.state.config.get("lane_count", 0) or 0)
+        return list(range(1, lane_count + 1))
+
+    def _build_face_candidates(
+        self, frame: np.ndarray, dets: List[Dict], lane_targets: List[int]
+    ) -> List[Dict]:
+        if frame is None or frame.size == 0 or not dets or not lane_targets:
+            return []
+
+        sortable = []
+        for det in dets:
+            bbox = det.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = bbox[:4]
+            sortable.append((float((x1 + x2) / 2.0), [float(x1), float(y1), float(x2), float(y2)]))
+
+        sortable.sort(key=lambda item: item[0])
+        candidates: List[Dict] = []
+        for lane, (_, bbox) in zip(lane_targets, sortable):
+            x1, y1, x2, y2 = bbox
+            h, w = frame.shape[:2]
+            xi1 = max(0, min(w - 1, int(x1)))
+            yi1 = max(0, min(h - 1, int(y1)))
+            xi2 = max(xi1 + 1, min(w, int(x2)))
+            yi2 = max(yi1 + 1, min(h, int(y2)))
+            crop = frame[yi1:yi2, xi1:xi2]
+            if crop.size == 0:
+                continue
+            candidates.append({"lane": lane, "image": crop, "bbox": bbox})
+        return candidates
 
     def _extract_tracker_inputs(self, tracker_result) -> tuple[List[Dict], List[int], List]:
         if tracker_result is None:
@@ -180,12 +225,32 @@ class AlgorithmRunner:
                     self.state.last_face_ts = int(ts_ms)
                     data = ev.get("data") or []
                     confirmed_students = list(self.state.binding_confirmed_students)
+                    confirmed_lanes = list(self.state.binding_confirmed_lanes)
+                    assignments = [
+                        item for item in self.state.binding_assignments if isinstance(item, dict)
+                    ]
+                    assignment_map = {
+                        int(item["lane"]): item
+                        for item in assignments
+                        if isinstance(item.get("lane"), int)
+                    }
                     for item in data:
-                        student_id = item.get("student_id") if isinstance(item, dict) else None
+                        if not isinstance(item, dict):
+                            continue
+                        student_id = item.get("student_id")
+                        lane = item.get("lane")
                         if student_id and student_id not in confirmed_students:
                             confirmed_students.append(str(student_id))
+                        if isinstance(lane, int) and lane not in confirmed_lanes:
+                            confirmed_lanes.append(lane)
+                        if isinstance(lane, int):
+                            assignment_map[lane] = item
                     self.state.binding_confirmed_students = confirmed_students
-                    if confirmed_students:
+                    self.state.binding_confirmed_lanes = confirmed_lanes
+                    self.state.binding_assignments = [
+                        assignment_map[lane] for lane in sorted(assignment_map)
+                    ]
+                    if confirmed_students or confirmed_lanes:
                         self.state.binding_confirmed_at_ms = int(ts_ms)
                 if ev.get("msg_type") == "VIOLATION_EVENT":
                     data = ev.get("data") or []

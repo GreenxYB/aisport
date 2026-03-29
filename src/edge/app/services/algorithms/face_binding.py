@@ -45,6 +45,32 @@ class FaceBindingAlgo:
         }
         return [event]
 
+    def process_candidates(self, candidates: List[Dict], ts_ms: float) -> List[Dict]:
+        if not self.client:
+            return []
+        results: List[Dict] = []
+        for candidate in candidates:
+            lane = candidate.get("lane")
+            image = candidate.get("image")
+            if image is None:
+                continue
+            face_base64 = self._frame_to_base64(image)
+            if not face_base64:
+                continue
+            matches = self.search_face_baidu(face_base64, self.settings.baidu_group_id)
+            if not matches:
+                continue
+            top = matches[0]
+            enriched = {
+                **top,
+                "lane": int(lane) if isinstance(lane, int) else lane,
+                "bbox": candidate.get("bbox"),
+            }
+            results.append(enriched)
+        if not results:
+            return []
+        return [{"msg_type": "ID_REPORT", "timestamp": int(ts_ms), "data": results}]
+
     def _frame_to_base64(self, frame: np.ndarray) -> str:
         try:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
