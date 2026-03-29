@@ -13,13 +13,21 @@ class SessionService:
         session_id = self._generate_session_id()
         session = Session(
             session_id=session_id,
-            status="INIT",
+            status="CREATED",
             created_at=datetime.utcnow(),
             project_type=payload.project_type,
             lane_count=payload.lane_count,
             start_node_id=payload.start_node_id,
             finish_node_id=payload.finish_node_id,
             tracking_node_ids=payload.tracking_node_ids,
+            bindings=payload.bindings,
+            sync_time_ms=payload.sync_time_ms,
+            require_bindings=bool(payload.bindings),
+            auto_start=payload.auto_start,
+            start_delay_ms=payload.start_delay_ms,
+            countdown_seconds=payload.countdown_seconds,
+            audio_plan=payload.audio_plan,
+            tracking_active=payload.tracking_active,
         )
         self._sessions[session_id] = session
         return session
@@ -30,18 +38,34 @@ class SessionService:
     def list(self) -> list[Session]:
         return list(self._sessions.values())
 
-    def build_init_command(self, session: Session, payload: SessionCreate) -> CommandPayload:
+    def build_init_command(self, session: Session, node_id: int) -> CommandPayload:
         return CommandPayload(
             cmd="CMD_INIT",
             session_id=session.session_id,
-            node_id=payload.start_node_id,
+            node_id=node_id,
             task_mode="TRACK_RACE",
             config={
-                "project_type": payload.project_type,
-                "lane_count": payload.lane_count,
-                "sync_time": payload.sync_time_ms,
+                "project_type": session.project_type,
+                "lane_count": session.lane_count,
+                "sync_time": session.sync_time_ms,
             },
         )
+
+    def build_binding_command(self, session: Session, node_id: int) -> CommandPayload:
+        return CommandPayload(
+            cmd="CMD_BINDING_SYNC",
+            session_id=session.session_id,
+            node_id=node_id,
+            task_mode="TRACK_RACE",
+            config={"bindings": session.bindings},
+        )
+
+    def update_status(self, session_id: str, status: str) -> Session | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        session.status = status
+        return session
 
     @staticmethod
     def node_ids(session: Session) -> List[int]:
@@ -68,6 +92,15 @@ class SessionService:
                 "tracking_active": tracking_active,
             },
         )
+
+    @staticmethod
+    def is_node_ready(session: Session, status_data: dict | None) -> bool:
+        if not status_data:
+            return False
+        camera_ready = bool(status_data.get("camera_ready"))
+        if session.require_bindings:
+            return camera_ready and bool(status_data.get("binding_ready"))
+        return camera_ready
 
     @staticmethod
     def _generate_session_id() -> str:

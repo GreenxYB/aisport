@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..models.schemas import SessionCreate, Session, CommandPayload, StartMonitorRequest
 from ..services.session_service import SessionService
 from ..services.node_connection_manager import NodeConnectionManager, get_node_manager
+from ..services.orchestrator import SessionOrchestrator, get_orchestrator
 
 router = APIRouter()
 
@@ -14,9 +15,21 @@ def get_service() -> SessionService:
     return get_service._svc  # type: ignore[attr-defined]
 
 
+def get_orchestrator_service(
+    svc: SessionService = Depends(get_service),
+    manager: NodeConnectionManager = Depends(get_node_manager),
+) -> SessionOrchestrator:
+    return get_orchestrator(svc, manager)
+
+
 @router.post("/", response_model=Session)
-def create_session(payload: SessionCreate, svc: SessionService = Depends(get_service)):
+async def create_session(
+    payload: SessionCreate,
+    svc: SessionService = Depends(get_service),
+    orchestrator: SessionOrchestrator = Depends(get_orchestrator_service),
+):
     session = svc.create(payload)
+    await orchestrator.register_session(session.session_id)
     return session
 
 
@@ -40,7 +53,7 @@ def build_init_command(
     session = svc.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return svc.build_init_command(session, payload)
+    return svc.build_init_command(session, payload.start_node_id)
 
 
 @router.get("/{session_id}/readiness")
@@ -61,7 +74,8 @@ async def get_readiness(
         row = online_nodes.get(node_id)
         last_status = row.get("last_status") if row else None
         status_data = (last_status or {}).get("data", {})
-        ready = bool(status_data.get("binding_ready")) and bool(status_data.get("camera_ready"))
+        session_match = (last_status or {}).get("session_id") == session.session_id
+        ready = session_match and svc.is_node_ready(session, status_data)
         online = bool(row and row.get("online"))
         all_ready = all_ready and online and ready
         nodes.append(
@@ -93,7 +107,8 @@ async def dispatch_start_monitor(
         row = online_nodes.get(node_id)
         last_status = row.get("last_status") if row else None
         status_data = (last_status or {}).get("data", {})
-        ready = bool(status_data.get("binding_ready")) and bool(status_data.get("camera_ready"))
+        session_match = (last_status or {}).get("session_id") == session.session_id
+        ready = session_match and svc.is_node_ready(session, status_data)
         online = bool(row and row.get("online"))
         if not (online and ready):
             missing_or_not_ready.append(node_id)

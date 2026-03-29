@@ -11,6 +11,7 @@ if str(SRC) not in sys.path:
 from cloud.app.main import create_app  # noqa: E402
 from cloud.app.services.node_connection_manager import get_node_manager  # noqa: E402
 from cloud.app.routers.sessions import get_service  # noqa: E402
+from cloud.app.services.orchestrator import get_orchestrator  # noqa: E402
 
 
 def build_client():
@@ -18,6 +19,8 @@ def build_client():
         delattr(get_node_manager, "_manager")
     if hasattr(get_service, "_svc"):
         delattr(get_service, "_svc")
+    if hasattr(get_orchestrator, "_orchestrator"):
+        delattr(get_orchestrator, "_orchestrator")
     return TestClient(create_app())
 
 
@@ -111,6 +114,7 @@ def test_session_readiness_and_start_dispatch():
             "start_node_id": 1,
             "finish_node_id": 2,
             "tracking_node_ids": [3],
+            "auto_start": False,
             "sync_time_ms": 1738416000000,
         },
     )
@@ -167,3 +171,77 @@ def test_session_readiness_and_start_dispatch():
 
     assert {item["node_id"] for item in received} == {1, 2, 3}
     assert all(item["cmd"] == "CMD_START_MONITOR" for item in received)
+
+
+def test_session_auto_orchestrates_init_binding_and_start():
+    with build_client() as client:
+        sockets = []
+        for node_id, role in [(1, "START"), (2, "FINISH")]:
+            ws = client.websocket_connect("/nodes/ws")
+            ws.__enter__()
+            ws.send_json(
+                {
+                    "node_id": node_id,
+                    "node_role": role,
+                    "site_id": "lab-a",
+                    "capabilities": ["camera"],
+                }
+            )
+            ack = ws.receive_json()
+            assert ack == {"type": "CONNECTED", "node_id": node_id}
+            sockets.append(ws)
+
+        create = client.post(
+            "/sessions",
+            json={
+                "project_type": "200m",
+                "lane_count": 8,
+                "start_node_id": 1,
+                "finish_node_id": 2,
+                "tracking_node_ids": [],
+                "bindings": [{"lane": 1, "student_id": "S101", "feature_id": "F001"}],
+                "auto_start": True,
+                "start_delay_ms": 3000,
+                "countdown_seconds": 3,
+                "audio_plan": "START_321_GO",
+                "tracking_active": True,
+                "sync_time_ms": 1738416000000,
+            },
+        )
+        assert create.status_code == 200
+        session_id = create.json()["session_id"]
+
+        for expected_node_id, ws in zip([1, 2], sockets):
+            init_cmd = ws.receive_json()
+            binding_cmd = ws.receive_json()
+            assert init_cmd["cmd"] == "CMD_INIT"
+            assert init_cmd["node_id"] == expected_node_id
+            assert init_cmd["session_id"] == session_id
+            assert binding_cmd["cmd"] == "CMD_BINDING_SYNC"
+            assert binding_cmd["node_id"] == expected_node_id
+            assert binding_cmd["config"]["bindings"][0]["student_id"] == "S101"
+
+            ws.send_json(
+                {
+                    "msg_type": "NODE_STATUS",
+                    "node_id": expected_node_id,
+                    "session_id": session_id,
+                    "timestamp": 1234567890 + expected_node_id,
+                    "data": {
+                        "phase": "BINDING",
+                        "binding_ready": True,
+                        "camera_ready": True,
+                    },
+                }
+            )
+
+        for expected_node_id, ws in zip([1, 2], sockets):
+            start_cmd = ws.receive_json()
+            assert start_cmd["cmd"] == "CMD_START_MONITOR"
+            assert start_cmd["node_id"] == expected_node_id
+            assert start_cmd["session_id"] == session_id
+            assert start_cmd["config"]["countdown_seconds"] == 3
+            assert start_cmd["config"]["audio_plan"] == "START_321_GO"
+            assert start_cmd["config"]["tracking_active"] is True
+            assert isinstance(start_cmd["config"]["expected_start_time"], int)
+            ws.__exit__(None, None, None)
