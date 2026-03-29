@@ -6,6 +6,7 @@ import numpy as np
 
 from ...core.config import get_settings
 from ...core.state import NodeState
+from .lane_layout import binding_target_lanes, resolve_lane_by_center_x
 from .rules import toe_proxy_points_from_keypoints
 
 logger = logging.getLogger("edge.yolo")
@@ -165,7 +166,18 @@ class ViolationAlgo:
             self._false_start_reported.clear()
             self._last_violation_ms = None
 
-    def _resolve_lane(self, track_id: Optional[int], idx: int) -> int:
+    def _resolve_lane(self, track_id: Optional[int], idx: int, item: Any, frame_width: int) -> int:
+        bbox = self._extract_box(item)
+        if isinstance(bbox, list) and len(bbox) >= 4 and frame_width > 0:
+            center_x = float(bbox[0] + bbox[2]) / 2.0
+            lane = resolve_lane_by_center_x(
+                center_x=center_x,
+                frame_width=frame_width,
+                target_lanes=binding_target_lanes(self.state.bindings, int(self.state.config.get("lane_count", 1) or 1)),
+                lane_ranges_text=self.settings.lane_x_ranges,
+            )
+            if lane is not None:
+                return lane
         if idx < len(self.state.bindings):
             lane = self.state.bindings[idx].get("lane")
             if isinstance(lane, int):
@@ -242,7 +254,7 @@ class ViolationAlgo:
                 debug_items: List[Dict[str, Any]] = []
                 for idx, item in enumerate(boxes):
                     track_id = track_ids[idx] if idx < len(track_ids) else None
-                    lane = self._resolve_lane(track_id, idx)
+                    lane = self._resolve_lane(track_id, idx, item, frame.shape[1] if frame is not None else 0)
                     kps_item = kps[idx] if idx < len(kps) else None
                     crossed, toe_points = self._foot_crossed_line(kps_item, line_y)
                     debug_items.append(
@@ -305,7 +317,7 @@ class ViolationAlgo:
 
         for idx, item in enumerate(boxes):
             track_id = track_ids[idx] if idx < len(track_ids) else None
-            lane = self._resolve_lane(track_id, idx)
+            lane = self._resolve_lane(track_id, idx, item, frame.shape[1] if frame is not None else 0)
             class_id = self._extract_class_id(item)
             class_name = (
                 self._names[class_id]

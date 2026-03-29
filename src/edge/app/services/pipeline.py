@@ -15,6 +15,7 @@ from ultralytics.utils.checks import check_yaml
 
 from ..core.config import get_settings
 from .algorithms.violation import extract_ultralytics_dets
+from .algorithms.lane_layout import binding_target_lanes, build_lane_segments
 
 # 获取 logger 实例
 logger = logging.getLogger("edge.pipeline")
@@ -466,6 +467,40 @@ class EdgePipeline:
                 match_thresh=0.8,
                 fuse_score=True,
             )
+
+    def _overlay_lane_guides(self, frame: np.ndarray) -> np.ndarray:
+        if not self.settings.display_lane_guides or frame is None or frame.size == 0:
+            return frame
+        state = getattr(self.algo_runner, "state", None)
+        bindings = getattr(state, "bindings", []) if state is not None else []
+        lane_count = 0
+        if state is not None:
+            lane_count = int(state.config.get("lane_count", 0) or 0)
+        target_lanes = binding_target_lanes(bindings, lane_count)
+        segments = build_lane_segments(
+            frame_width=frame.shape[1],
+            target_lanes=target_lanes,
+            lane_ranges_text=self.settings.lane_x_ranges,
+        )
+        if not segments:
+            return frame
+        annotated = frame.copy()
+        for segment in segments:
+            x1 = int(segment["x1"])
+            x2 = int(segment["x2"])
+            lane = int(segment["lane"])
+            cv2.line(annotated, (x1, 0), (x1, annotated.shape[0] - 1), (255, 255, 0), 1)
+            cv2.line(annotated, (x2 - 1, 0), (x2 - 1, annotated.shape[0] - 1), (255, 255, 0), 1)
+            cv2.putText(
+                annotated,
+                f"L{lane}",
+                (x1 + 6, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+            )
+        return annotated
 
     def start(self):
         """启动流水线所有线程"""
@@ -934,6 +969,7 @@ class EdgePipeline:
             self.timer.start("5_drawing")
             try:
                 annotated_frame = tracker_result.draw()
+                annotated_frame = self._overlay_lane_guides(annotated_frame)
                 cv2.putText(
                     annotated_frame,
                     f"FPS: {fps:.1f}",

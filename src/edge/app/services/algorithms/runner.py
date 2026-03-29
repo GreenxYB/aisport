@@ -8,6 +8,7 @@ import numpy as np
 from ...core.config import get_settings
 from ...core.state import NodePhase, NodeState
 from .face_binding import FaceBindingAlgo
+from .lane_layout import binding_target_lanes, build_lane_segments, resolve_lane_by_center_x
 from .violation import ViolationAlgo
 from .finish_line import FinishLineAlgo
 
@@ -143,15 +144,8 @@ class AlgorithmRunner:
         return events
 
     def _binding_target_lanes(self) -> List[int]:
-        lanes = [
-            int(item.get("lane"))
-            for item in self.state.bindings
-            if isinstance(item, dict) and isinstance(item.get("lane"), int)
-        ]
-        if lanes:
-            return sorted(dict.fromkeys(lanes))
         lane_count = int(self.state.config.get("lane_count", 0) or 0)
-        return list(range(1, lane_count + 1))
+        return binding_target_lanes(self.state.bindings, lane_count)
 
     def _build_face_candidates(
         self, frame: np.ndarray, dets: List[Dict], lane_targets: List[int]
@@ -159,18 +153,43 @@ class AlgorithmRunner:
         if frame is None or frame.size == 0 or not dets or not lane_targets:
             return []
 
-        sortable = []
+        segments = build_lane_segments(
+            frame_width=frame.shape[1],
+            target_lanes=lane_targets,
+            lane_ranges_text=self.settings.lane_x_ranges,
+        )
+        best_by_lane: Dict[int, Dict[str, Any]] = {}
         for det in dets:
             bbox = det.get("bbox")
             if not isinstance(bbox, list) or len(bbox) < 4:
                 continue
             x1, y1, x2, y2 = bbox[:4]
-            sortable.append((float((x1 + x2) / 2.0), [float(x1), float(y1), float(x2), float(y2)]))
+            center_x = float((x1 + x2) / 2.0)
+            lane = resolve_lane_by_center_x(
+                center_x=center_x,
+                frame_width=frame.shape[1],
+                target_lanes=lane_targets,
+                lane_ranges_text=self.settings.lane_x_ranges,
+            )
+            if lane is None:
+                continue
+            score = float(det.get("score") or 0.0)
+            area = max(1.0, float(x2 - x1) * float(y2 - y1))
+            current = best_by_lane.get(lane)
+            if current is None or (score, area) > (current["score"], current["area"]):
+                best_by_lane[lane] = {
+                    "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                    "score": score,
+                    "area": area,
+                }
 
-        sortable.sort(key=lambda item: item[0])
         candidates: List[Dict] = []
-        for lane, (_, bbox) in zip(lane_targets, sortable):
-            x1, y1, x2, y2 = bbox
+        for segment in segments:
+            lane = int(segment["lane"])
+            current = best_by_lane.get(lane)
+            if current is None:
+                continue
+            x1, y1, x2, y2 = current["bbox"]
             h, w = frame.shape[:2]
             xi1 = max(0, min(w - 1, int(x1)))
             yi1 = max(0, min(h - 1, int(y1)))

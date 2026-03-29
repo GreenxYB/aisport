@@ -4,6 +4,7 @@ import numpy as np
 
 from ...core.config import get_settings
 from ...core.state import NodeState, NodePhase
+from .lane_layout import binding_target_lanes, resolve_lane_by_center_x
 from .rules import FinishLineJudge, max_measure_y_for_finish
 
 
@@ -28,7 +29,17 @@ class FinishLineAlgo:
             return line_y
         return int(line_y * h / 640)
 
-    def _resolve_lane(self, track_id: Optional[int], idx: int) -> int:
+    def _resolve_lane(self, track_id: Optional[int], idx: int, bbox: Optional[List[float]], frame_width: int) -> int:
+        if isinstance(bbox, list) and len(bbox) >= 4 and frame_width > 0:
+            center_x = float(bbox[0] + bbox[2]) / 2.0
+            lane = resolve_lane_by_center_x(
+                center_x=center_x,
+                frame_width=frame_width,
+                target_lanes=binding_target_lanes(self.state.bindings, int(self.state.config.get("lane_count", 1) or 1)),
+                lane_ranges_text=self.settings.lane_x_ranges,
+            )
+            if lane is not None:
+                return lane
         if idx < len(self.state.bindings):
             lane = self.state.bindings[idx].get("lane")
             if isinstance(lane, int):
@@ -63,8 +74,8 @@ class FinishLineAlgo:
         results = []
         for idx, item in enumerate(dets):
             track_id = track_ids[idx] if idx < len(track_ids) else idx
-            lane = self._resolve_lane(track_id, idx)
             bbox = item.get("bbox")
+            lane = self._resolve_lane(track_id, idx, bbox, frame_shape[1] if frame_shape else 0)
             keypoints = item.get("keypoints")
             measure_y = max_measure_y_for_finish(
                 bbox=bbox,

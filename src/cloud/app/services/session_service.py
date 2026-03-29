@@ -24,8 +24,10 @@ class SessionService:
             sync_time_ms=payload.sync_time_ms,
             require_bindings=bool(payload.bindings),
             auto_start=payload.auto_start,
+            binding_timeout_sec=payload.binding_timeout_sec,
             start_delay_ms=payload.start_delay_ms,
             countdown_seconds=payload.countdown_seconds,
+            race_timeout_sec=payload.race_timeout_sec,
             audio_plan=payload.audio_plan,
             tracking_active=payload.tracking_active,
         )
@@ -48,6 +50,8 @@ class SessionService:
                 "project_type": session.project_type,
                 "lane_count": session.lane_count,
                 "sync_time": session.sync_time_ms,
+                "binding_timeout_sec": session.binding_timeout_sec,
+                "race_timeout_sec": session.race_timeout_sec,
             },
         )
 
@@ -74,6 +78,15 @@ class SessionService:
         session.expected_start_time = expected_start_time
         return session
 
+    def finish(self, session_id: str, status: str, reason: str | None = None, finished_at_ms: int | None = None) -> Session | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        session.status = status
+        session.terminal_reason = reason
+        session.finished_at_ms = finished_at_ms
+        return session
+
     @staticmethod
     def node_ids(session: Session) -> List[int]:
         ids = [session.start_node_id, session.finish_node_id, *session.tracking_node_ids]
@@ -97,8 +110,30 @@ class SessionService:
                 "countdown_seconds": countdown_seconds,
                 "audio_plan": audio_plan,
                 "tracking_active": tracking_active,
+                "race_timeout_sec": session.race_timeout_sec,
             },
         )
+
+    @staticmethod
+    def build_stop_command(session: Session, node_id: int, reason: str) -> CommandPayload:
+        return CommandPayload(
+            cmd="CMD_STOP",
+            session_id=session.session_id,
+            node_id=node_id,
+            task_mode="TRACK_RACE",
+            config={"reason": reason},
+        )
+
+    @staticmethod
+    def target_lanes(session: Session) -> List[int]:
+        lanes = [
+            int(item.get("lane"))
+            for item in session.bindings
+            if isinstance(item, dict) and isinstance(item.get("lane"), int)
+        ]
+        if lanes:
+            return sorted(dict.fromkeys(lanes))
+        return list(range(1, int(session.lane_count) + 1))
 
     @staticmethod
     def is_node_ready(session: Session, status_data: dict | None, node_role: str | None = None) -> bool:

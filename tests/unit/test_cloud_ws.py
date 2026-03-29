@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import time
 
 from fastapi.testclient import TestClient
 
@@ -517,3 +518,156 @@ def test_session_diagnostics_exposes_workflow_and_node_status():
         assert payload["results"]["report_counts"]["finishes"] == 0
 
         ws.__exit__(None, None, None)
+
+
+def test_session_binding_timeout_marks_session_terminal():
+    with build_client() as client:
+        ws = client.websocket_connect("/nodes/ws")
+        ws.__enter__()
+        ws.send_json(
+            {
+                "node_id": 1,
+                "node_role": "START",
+                "site_id": "lab-a",
+                "capabilities": ["camera"],
+            }
+        )
+        _ = ws.receive_json()
+
+        create = client.post(
+            "/sessions",
+            json={
+                "project_type": "200m",
+                "lane_count": 8,
+                "start_node_id": 1,
+                "finish_node_id": 1,
+                "tracking_node_ids": [],
+                "bindings": [{"lane": 1}],
+                "auto_start": True,
+                "binding_timeout_sec": 1,
+            },
+        )
+        session_id = create.json()["session_id"]
+
+        _ = ws.receive_json()  # init
+        _ = ws.receive_json()  # binding
+        ws.send_json(
+            {
+                "msg_type": "NODE_STATUS",
+                "node_id": 1,
+                "session_id": session_id,
+                "timestamp": 1234567890,
+                "data": {
+                    "phase": "BINDING",
+                    "binding_ready": False,
+                    "camera_ready": True,
+                    "node_role": "START",
+                },
+            }
+        )
+
+        time.sleep(1.7)
+        stop_cmd = ws.receive_json()
+        assert stop_cmd["cmd"] == "CMD_STOP"
+        assert stop_cmd["config"]["reason"] == "BINDING_TIMEOUT"
+
+        diagnostics = client.get(f"/sessions/{session_id}/diagnostics")
+        payload = diagnostics.json()
+        assert payload["session"]["status"] == "BINDING_TIMEOUT"
+        assert payload["session"]["terminal_reason"] == "No valid binding completed before timeout"
+        assert payload["workflow"]["stop_sent"] is True
+
+        results = client.get(f"/sessions/{session_id}/results").json()
+        lane1 = next(item for item in results["results"] if item["lane"] == 1)
+        assert lane1["result_status"] == "UNBOUND"
+
+        ws.__exit__(None, None, None)
+
+
+def test_session_race_timeout_marks_missing_lane_dnf():
+    with build_client() as client:
+        sockets = []
+        for node_id, role in [(1, "START"), (2, "FINISH")]:
+            ws = client.websocket_connect("/nodes/ws")
+            ws.__enter__()
+            ws.send_json(
+                {
+                    "node_id": node_id,
+                    "node_role": role,
+                    "site_id": "lab-a",
+                    "capabilities": ["camera"],
+                }
+            )
+            _ = ws.receive_json()
+            sockets.append(ws)
+
+        create = client.post(
+            "/sessions",
+            json={
+                "project_type": "200m",
+                "lane_count": 8,
+                "start_node_id": 1,
+                "finish_node_id": 2,
+                "tracking_node_ids": [],
+                "bindings": [{"lane": 1}, {"lane": 2}],
+                "auto_start": True,
+                "binding_timeout_sec": 5,
+                "start_delay_ms": 1000,
+                "race_timeout_sec": 1,
+            },
+        )
+        session_id = create.json()["session_id"]
+
+        for node_id, ws in zip([1, 2], sockets):
+            _ = ws.receive_json()  # init
+            _ = ws.receive_json()  # binding
+            ws.send_json(
+                {
+                    "msg_type": "NODE_STATUS",
+                    "node_id": node_id,
+                    "session_id": session_id,
+                    "timestamp": 1234567890 + node_id,
+                    "data": {
+                        "phase": "BINDING",
+                        "binding_ready": True,
+                        "camera_ready": True,
+                        "node_role": "START" if node_id == 1 else "FINISH",
+                    },
+                }
+            )
+
+        for ws in sockets:
+            start_cmd = ws.receive_json()
+            assert start_cmd["cmd"] == "CMD_START_MONITOR"
+
+        finish = client.post(
+            "/nodes/reports/finish",
+            json={
+                "msg_type": "FINISH_REPORT",
+                "node_id": 2,
+                "session_id": session_id,
+                "timestamp": 1773000013000,
+                "data": [{"lane": 1, "track_id": 11, "rank": 1, "finish_ts": 1773000012000}],
+            },
+        )
+        assert finish.status_code == 200
+
+        time.sleep(2.2)
+        for ws in sockets:
+            stop_cmd = ws.receive_json()
+            assert stop_cmd["cmd"] == "CMD_STOP"
+            assert stop_cmd["config"]["reason"] == "RACE_TIMEOUT"
+
+        diagnostics = client.get(f"/sessions/{session_id}/diagnostics")
+        payload = diagnostics.json()
+        assert payload["session"]["status"] == "RACE_TIMEOUT"
+        assert payload["workflow"]["stop_sent"] is True
+
+        results = client.get(f"/sessions/{session_id}/results").json()
+        lane1 = next(item for item in results["results"] if item["lane"] == 1)
+        lane2 = next(item for item in results["results"] if item["lane"] == 2)
+        assert lane1["result_status"] == "OK"
+        assert lane2["result_status"] == "DNF"
+
+        for ws in sockets:
+            ws.__exit__(None, None, None)
