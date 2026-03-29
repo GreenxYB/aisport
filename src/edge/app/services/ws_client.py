@@ -10,6 +10,24 @@ from typing import Optional
 from common.protocol import CommandAckMessage, CommandPayload, NodeConnectPayload
 
 
+def _to_jsonable(value):
+    try:
+        import numpy as np
+    except Exception:  # pragma: no cover
+        np = None
+
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if np is not None:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+    return value
+
+
 class EdgeWsClient:
     def __init__(self, handler):
         self.handler = handler
@@ -32,7 +50,7 @@ class EdgeWsClient:
         self.handler.set_publisher(None)
 
     def publish(self, message: dict) -> bool:
-        self._outgoing.put(message)
+        self._outgoing.put(_to_jsonable(message))
         return True
 
     def _run(self) -> None:

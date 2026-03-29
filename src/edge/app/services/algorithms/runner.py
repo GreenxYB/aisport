@@ -12,6 +12,18 @@ from .violation import ViolationAlgo
 from .finish_line import FinishLineAlgo
 
 
+def _to_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
 class AlgorithmRunner:
     def __init__(self, state: NodeState, publisher: Any = None):
         self.settings = get_settings()
@@ -49,6 +61,8 @@ class AlgorithmRunner:
             ev.setdefault("node_id", self.state.node_id)
             ev.setdefault("session_id", self.state.session_id)
             ev.setdefault("timestamp", int(ts_ms))
+
+        events = [_to_jsonable(ev) for ev in events]
 
         if events:
             for ev in events:
