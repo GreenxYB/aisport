@@ -501,6 +501,12 @@ def test_session_diagnostics_exposes_workflow_and_node_status():
                     "binding_confirmed_count": 0,
                     "binding_pending_count": 1,
                     "binding_pending_students": ["S101"],
+                    "lane_layout_status": {
+                        "source": "auto",
+                        "calibrated": False,
+                        "warning": "lane layout missing; using equal-width fallback",
+                        "file": None,
+                    },
                     "camera_ready": True,
                     "node_role": "START",
                 },
@@ -516,6 +522,7 @@ def test_session_diagnostics_exposes_workflow_and_node_status():
         assert payload["readiness"]["all_ready"] is False
         assert payload["nodes"][0]["last_status"]["data"]["session_stage"] == "WAIT_BINDING"
         assert payload["results"]["report_counts"]["finishes"] == 0
+        assert payload["warnings"][0]["type"] == "LANE_LAYOUT"
 
         ws.__exit__(None, None, None)
 

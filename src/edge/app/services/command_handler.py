@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from common.protocol import CommandPayload, NodeStatusReport
 from ..core.config import get_settings
 from ..core.state import NodePhase, NodeState
+from .algorithms.lane_layout import binding_target_lanes, inspect_lane_layout
 from .event_simulator import EventSimulator
 from .algorithms import AlgorithmRunner
 from .publisher import NullPublisher
@@ -368,14 +369,8 @@ class CommandHandler:
         return "-"
 
     def build_status_report(self) -> NodeStatusReport:
-        binding_target_lanes = [
-            int(item.get("lane"))
-            for item in self.state.bindings
-            if isinstance(item, dict) and isinstance(item.get("lane"), int)
-        ]
-        if not binding_target_lanes:
-            lane_count = int(self.state.config.get("lane_count", 0) or 0)
-            binding_target_lanes = list(range(1, lane_count + 1))
+        lane_count = int(self.state.config.get("lane_count", 0) or 0)
+        target_lanes = binding_target_lanes(self.state.bindings, lane_count)
 
         binding_target_students = [
             str(item.get("student_id"))
@@ -388,11 +383,11 @@ class CommandHandler:
             student_id for student_id in binding_target_students if student_id not in confirmed_students
         ]
         pending_lanes = [
-            lane for lane in binding_target_lanes if lane not in confirmed_lanes
+            lane for lane in target_lanes if lane not in confirmed_lanes
         ]
         binding_required = bool(binding_target_students) and self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}
         if self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}:
-            binding_required = bool(binding_target_lanes)
+            binding_required = bool(target_lanes)
         binding_ready = (not binding_required) or not pending_lanes
         now_ms = int(time.time() * 1000)
         session_stage = self.state.phase.value
@@ -405,6 +400,15 @@ class CommandHandler:
                 session_stage = "RUNNING"
         elif self.state.phase == NodePhase.STOPPED:
             session_stage = "STOPPED"
+
+        lane_layout_status = inspect_lane_layout(
+            frame_width=int(self.settings.capture_width),
+            frame_height=int(self.settings.capture_height),
+            target_lanes=target_lanes,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
 
         return NodeStatusReport(
             node_id=self.state.node_id,
@@ -420,8 +424,8 @@ class CommandHandler:
                 "capture_error": self.state.capture_error,
                 "binding_required": binding_required,
                 "binding_ready": binding_ready,
-                "binding_target_count": len(binding_target_lanes),
-                "binding_target_lanes": binding_target_lanes,
+                "binding_target_count": len(target_lanes),
+                "binding_target_lanes": target_lanes,
                 "binding_confirmed_count": len(confirmed_lanes),
                 "binding_confirmed_lanes": confirmed_lanes,
                 "binding_pending_count": len(pending_lanes),
@@ -431,6 +435,7 @@ class CommandHandler:
                 "binding_assignments": self.state.binding_assignments,
                 "binding_confirmed_at_ms": self.state.binding_confirmed_at_ms,
                 "last_face_ts": self.state.last_face_ts,
+                "lane_layout_status": lane_layout_status,
                 "lane_layout_debug": self.state.lane_layout_debug,
                 "last_lane_observation_ts": self.state.last_lane_observation_ts,
                 "camera_ready": self.state.capture_running and not self.state.capture_error,

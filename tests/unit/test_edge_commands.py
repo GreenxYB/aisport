@@ -12,11 +12,15 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from edge.app.main import create_app  # noqa: E402
+from edge.app.core.config import get_settings  # noqa: E402
 from edge.app.routers.commands import get_handler  # noqa: E402
 from edge.app.core.state import NodeState  # noqa: E402
 
 
 def reset_state():
+    get_settings.cache_clear()
+    if hasattr(get_handler, "_handler"):
+        delattr(get_handler, "_handler")
     handler = get_handler()
     handler.state = NodeState(node_id=handler.settings.node_id)
     return handler
@@ -253,6 +257,27 @@ def test_preview_snapshot_uses_pipeline_cache():
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert resp.content == b"fake-jpeg"
+
+
+def test_status_reports_lane_layout_warning_when_file_missing(monkeypatch):
+    monkeypatch.setenv("LANE_LAYOUT_FILE", "configs/does_not_exist.json")
+    build_client()
+    handler = get_handler()
+    handler.handle(
+        type("Payload", (), {
+            "cmd": "CMD_INIT",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "config": {"lane_count": 4},
+            "task_mode": "TRACK_RACE",
+        })()
+    )
+
+    status = handler.build_status_report().model_dump()
+    lane_layout_status = status["data"]["lane_layout_status"]
+    assert lane_layout_status["source"] == "auto"
+    assert lane_layout_status["calibrated"] is False
+    assert "not found" in lane_layout_status["warning"]
 
 
 def test_results_boolean_mask_keeps_lengths_aligned():
