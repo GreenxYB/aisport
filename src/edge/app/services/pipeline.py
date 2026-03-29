@@ -483,6 +483,7 @@ class EdgePipeline:
             target_lanes=target_lanes,
             lane_ranges_text=self.settings.lane_x_ranges,
             lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
         )
         if not shapes:
             return frame

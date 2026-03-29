@@ -85,6 +85,10 @@ class Settings(BaseSettings):
         "",
         description="Optional lane x ranges like '1:0-160,2:160-320' in preview-space pixels",
     )
+    lane_layout_file: str = Field(
+        "",
+        description="Optional JSON lane layout file path; preferred over inline lane polygons",
+    )
     lane_polygons: str = Field(
         "",
         description="Optional lane polygons like '1:20-40|280-40|240-620|40-620;2:...'",

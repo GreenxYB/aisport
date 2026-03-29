@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -86,6 +87,45 @@ def parse_lane_polygons(
     return polygons
 
 
+def load_lane_polygons_from_file(
+    lane_layout_file: str,
+    frame_width: int,
+    frame_height: int,
+) -> Dict[int, List[Tuple[int, int]]]:
+    if not lane_layout_file:
+        return {}
+    path = Path(str(lane_layout_file))
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    lanes = payload.get("lanes") if isinstance(payload, dict) else payload
+    if not isinstance(lanes, list):
+        return {}
+
+    polygons: Dict[int, List[Tuple[int, int]]] = {}
+    for item in lanes:
+        if not isinstance(item, dict):
+            continue
+        lane = item.get("lane")
+        points = item.get("points")
+        if not isinstance(lane, int) or not isinstance(points, list):
+            continue
+        normalized = []
+        for point in points:
+            if not isinstance(point, (list, tuple)) or len(point) < 2:
+                continue
+            normalized.append(_clamp_point(point[0], point[1], frame_width, frame_height))
+        if len(normalized) >= 3:
+            polygons[lane] = normalized
+    return polygons
+
+
 def parse_lane_ranges(lane_ranges_text: str, frame_width: int) -> Dict[int, tuple[int, int]]:
     ranges: Dict[int, tuple[int, int]] = {}
     if not lane_ranges_text:
@@ -114,11 +154,14 @@ def build_lane_shapes(
     target_lanes: List[int],
     lane_ranges_text: str = "",
     lane_polygons_text: str = "",
+    lane_layout_file: str = "",
 ) -> List[Dict[str, Any]]:
     if frame_width <= 0 or frame_height <= 0 or not target_lanes:
         return []
 
-    polygons = parse_lane_polygons(lane_polygons_text, frame_width, frame_height)
+    polygons = load_lane_polygons_from_file(lane_layout_file, frame_width, frame_height)
+    if not polygons:
+        polygons = parse_lane_polygons(lane_polygons_text, frame_width, frame_height)
     if polygons:
         shapes = []
         for lane in target_lanes:
@@ -201,6 +244,7 @@ def resolve_lane_by_point(
     target_lanes: List[int],
     lane_ranges_text: str = "",
     lane_polygons_text: str = "",
+    lane_layout_file: str = "",
 ) -> Optional[int]:
     shapes = build_lane_shapes(
         frame_width=frame_width,
@@ -208,6 +252,7 @@ def resolve_lane_by_point(
         target_lanes=target_lanes,
         lane_ranges_text=lane_ranges_text,
         lane_polygons_text=lane_polygons_text,
+        lane_layout_file=lane_layout_file,
     )
     if not shapes:
         return None

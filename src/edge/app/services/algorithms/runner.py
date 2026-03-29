@@ -159,6 +159,7 @@ class AlgorithmRunner:
             target_lanes=lane_targets,
             lane_ranges_text=self.settings.lane_x_ranges,
             lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
         )
         best_by_lane: Dict[int, Dict[str, Any]] = {}
         for det in dets:
@@ -176,6 +177,7 @@ class AlgorithmRunner:
                 target_lanes=lane_targets,
                 lane_ranges_text=self.settings.lane_x_ranges,
                 lane_polygons_text=self.settings.lane_polygons,
+                lane_layout_file=self.settings.lane_layout_file,
             )
             if lane is None:
                 continue
