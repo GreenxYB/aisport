@@ -169,6 +169,7 @@ class CommandHandler:
         self.state.binding_confirmed_at_ms = None
         self.state.last_face_result = None
         self.state.last_face_ts = None
+        self.algo.reset_binding_runtime()
         # 停止事件模拟
         self.event_sim.stop()
         self._touch(payload.cmd)
@@ -252,13 +253,53 @@ class CommandHandler:
         self.state.phase = NodePhase.STOPPED
         # 保存停止原因
         self.state.stop_reason = (payload.config or {}).get("reason")
+        reason = str(self.state.stop_reason or "")
+        # 区分“停止业务”与“关闭预览/采集”：
+        # - 默认情况下：停止业务并停止管道（与历史行为一致）
+        # - BINDING_TIMEOUT：默认仅停止业务，保留预览窗口用于现场排查
+        # - 可通过 payload.config.stop_capture 显式覆盖
+        stop_capture = bool(
+            (payload.config or {}).get(
+                "stop_capture",
+                False if reason == "BINDING_TIMEOUT" else True,
+            )
+        )
+        if reason == "BINDING_TIMEOUT":
+            try:
+                status = self.build_status_report().data
+                self.logger.warning(
+                    "binding timeout diagnostics session=%s stage=%s ready=%s required=%s "
+                    "configured_lanes=%s observed_lanes=%s confirmed_lanes=%s pending_lanes=%s "
+                    "last_face_ts=%s last_lane_obs_ts=%s camera_ready=%s",
+                    self.state.session_id,
+                    status.get("session_stage"),
+                    status.get("binding_ready"),
+                    status.get("binding_required"),
+                    status.get("binding_configured_lanes", status.get("binding_target_lanes")),
+                    status.get("binding_observed_lanes"),
+                    status.get("binding_confirmed_lanes"),
+                    status.get("binding_pending_lanes"),
+                    status.get("last_face_ts"),
+                    status.get("last_lane_observation_ts"),
+                    status.get("camera_ready"),
+                )
+            except Exception as exc:
+                self.logger.warning("binding timeout diagnostics failed: %s", exc)
         # 关闭跟踪功能
         self.state.config["tracking_active"] = False
-        # 停止视频处理管道
-        self.pipeline.stop()
-        # 更新采集状态
-        self.state.capture_running = False
-        self.state.capture_error = None
+        # 可选停止视频处理管道（会关闭可视化窗口）
+        if stop_capture:
+            self.pipeline.stop()
+            self.state.capture_running = False
+            self.state.capture_error = None
+        else:
+            self.logger.info(
+                "stop cmd=%s reason=%s stop_capture=%s -> 仅停止业务，保留采集与预览",
+                payload.cmd,
+                reason or "-",
+                stop_capture,
+            )
+            self.state.capture_running = self.pipeline.running
         # 停止事件模拟
         self.event_sim.stop()
         self._touch(payload.cmd)
@@ -287,6 +328,7 @@ class CommandHandler:
         self.state.last_false_start_ts = None
         self.state.last_toe_proxy_debug = None
         self.state.last_toe_proxy_ts = None
+        self.algo.reset_binding_runtime()
 
         self.event_sim.stop()
         self._touch(payload.cmd)
@@ -365,17 +407,49 @@ class CommandHandler:
                 f"tracking={config.get('tracking_active', True)}"
             )
         if payload.cmd in {"CMD_STOP", "CMD_RESET_ROUND"}:
-            return f"reason={config.get('reason')}"
+            return (
+                f"reason={config.get('reason')} "
+                f"stop_capture={config.get('stop_capture')}"
+            )
         return "-"
 
     def build_status_report(self) -> NodeStatusReport:
         lane_count = int(self.state.config.get("lane_count", 0) or 0)
-        target_lanes = binding_target_lanes(self.state.bindings, lane_count)
+        configured_target_lanes = binding_target_lanes(self.state.bindings, lane_count)
+
+        observed_lanes: list[int] = []
+        lane_debug = self.state.lane_layout_debug
+        if isinstance(lane_debug, dict):
+            observations = lane_debug.get("observations") or []
+            if isinstance(observations, list):
+                for item in observations:
+                    if isinstance(item, dict) and isinstance(item.get("lane"), int):
+                        observed_lanes.append(int(item["lane"]))
+        observed_lanes = list(dict.fromkeys(observed_lanes))
+
+        # 绑定就绪优先按“当前画面里实际出现的跑道”判定，
+        # 但仅限于已配置绑定的跑道，避免无关区域干扰。
+        if configured_target_lanes and observed_lanes:
+            observed_set = set(observed_lanes)
+            target_lanes = [lane for lane in configured_target_lanes if lane in observed_set]
+            if not target_lanes:
+                target_lanes = configured_target_lanes
+        else:
+            target_lanes = configured_target_lanes
+
+        binding_students_by_lane: dict[int, str] = {}
+        for item in self.state.bindings:
+            if not isinstance(item, dict):
+                continue
+            lane = item.get("lane")
+            student_id = item.get("student_id")
+            if isinstance(lane, int) and student_id:
+                binding_students_by_lane[int(lane)] = str(student_id)
 
         binding_target_students = [
-            str(item.get("student_id"))
-            for item in self.state.bindings
-            if isinstance(item, dict) and item.get("student_id")
+            binding_students_by_lane[lane]
+            for lane in target_lanes
+            if lane in binding_students_by_lane
         ]
         confirmed_students = list(dict.fromkeys(self.state.binding_confirmed_students))
         confirmed_lanes = list(dict.fromkeys(self.state.binding_confirmed_lanes))
@@ -426,6 +500,8 @@ class CommandHandler:
                 "binding_ready": binding_ready,
                 "binding_target_count": len(target_lanes),
                 "binding_target_lanes": target_lanes,
+                "binding_configured_lanes": configured_target_lanes,
+                "binding_observed_lanes": observed_lanes,
                 "binding_confirmed_count": len(confirmed_lanes),
                 "binding_confirmed_lanes": confirmed_lanes,
                 "binding_pending_count": len(pending_lanes),

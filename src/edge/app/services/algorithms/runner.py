@@ -1,5 +1,5 @@
 import json
-import time
+import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 
@@ -33,10 +33,26 @@ class AlgorithmRunner:
         self.face = FaceBindingAlgo()
         self.violation = ViolationAlgo(self.state)
         self.finish = FinishLineAlgo(self.state)
+        self.logger = logging.getLogger("edge.binding")
         self._last_run_ms: Optional[int] = None
         self._last_face_report_ms: Optional[int] = None
         self._last_face_signature: Optional[str] = None
+        self._last_binding_diag_ms: Optional[int] = None
         self._log_path = Path(self.settings.algo_log_path)
+
+    def reset_binding_runtime(self) -> None:
+        """Reset per-session face-binding runtime cache."""
+        self._last_face_report_ms = None
+        self._last_face_signature = None
+        self._last_binding_diag_ms = None
+
+    def _binding_diag(self, ts_ms: float, message: str, *args) -> None:
+        """Throttled binding diagnostics to avoid log flooding."""
+        now_ms = int(ts_ms)
+        if self._last_binding_diag_ms is not None and now_ms - self._last_binding_diag_ms < 1500:
+            return
+        self._last_binding_diag_ms = now_ms
+        self.logger.info(message, *args)
 
     def process_frame(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
         if not self.settings.algo_enabled:
@@ -177,23 +193,54 @@ class AlgorithmRunner:
         interval_ms = int(max(self.settings.face_report_interval_sec, 0.2) * 1000)
         now_ms = int(ts_ms)
         if self._last_face_report_ms is not None and now_ms - self._last_face_report_ms < interval_ms:
+            self._binding_diag(
+                ts_ms,
+                "binding skip: interval throttle remain_ms=%s",
+                interval_ms - (now_ms - self._last_face_report_ms),
+            )
             return []
 
         lane_targets = self._binding_target_lanes()
         candidates = self._build_face_candidates(frame, dets, lane_targets)
         if not candidates:
+            self._binding_diag(
+                ts_ms,
+                "binding skip: no candidates target_lanes=%s dets=%s",
+                lane_targets,
+                len(dets),
+            )
             return []
 
         events = self.face.process_candidates(candidates, ts_ms)
         if not events:
+            candidate_lanes = [item.get("lane") for item in candidates]
+            self._binding_diag(
+                ts_ms,
+                "binding skip: face no match candidate_lanes=%s candidates=%s",
+                candidate_lanes,
+                len(candidates),
+            )
             return []
 
         signature = json.dumps(events[0].get("data", []), ensure_ascii=False, sort_keys=True)
         if signature == self._last_face_signature and self._last_face_report_ms is not None:
+            lanes = [item.get("lane") for item in (events[0].get("data") or []) if isinstance(item, dict)]
+            self._binding_diag(
+                ts_ms,
+                "binding skip: duplicate report lanes=%s",
+                lanes,
+            )
             return []
 
         self._last_face_signature = signature
         self._last_face_report_ms = now_ms
+        lanes = [item.get("lane") for item in (events[0].get("data") or []) if isinstance(item, dict)]
+        students = [item.get("student_id") for item in (events[0].get("data") or []) if isinstance(item, dict)]
+        self.logger.info(
+            "binding report generated lanes=%s students=%s",
+            lanes,
+            students,
+        )
         return events
 
     def _binding_target_lanes(self) -> List[int]:
