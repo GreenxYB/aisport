@@ -13,7 +13,7 @@ except ImportError as exc:
 
 from ..core.config import get_settings
 from ..core.state import NodeState
-from .algorithms.lane_layout import binding_target_lanes, build_lane_segments
+from .algorithms.lane_layout import binding_target_lanes, build_lane_shapes
 
 
 FrameCallback = Callable[[np.ndarray, float], None]  # frame, ts_ms
@@ -420,35 +420,46 @@ class CaptureManager:
         lane_count = int(self.state.config.get("lane_count", 0) or 0) if self.state else 0
         bindings = self.state.bindings if self.state else []
         target_lanes = binding_target_lanes(bindings, lane_count)
-        segments = build_lane_segments(
+        shapes = build_lane_shapes(
             frame_width=preview.shape[1],
+            frame_height=preview.shape[0],
             target_lanes=target_lanes,
             lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
         )
-        if not segments:
+        if not shapes:
             return
-        for segment in segments:
-            x1 = int(segment["x1"])
-            x2 = int(segment["x2"])
-            lane = int(segment["lane"])
-            cv2.line(
-                preview,
-                (x1, 0),
-                (x1, preview.shape[0] - 1),
-                self._style["line_color"],
-                1,
-            )
-            cv2.line(
-                preview,
-                (x2 - 1, 0),
-                (x2 - 1, preview.shape[0] - 1),
-                self._style["line_color"],
-                1,
-            )
+        for shape in shapes:
+            lane = int(shape["lane"])
+            points = shape.get("points") or []
+            if len(points) >= 3:
+                pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(preview, [pts], isClosed=True, color=self._style["line_color"], thickness=1)
+                label_x = int(points[0][0]) + 6
+                label_y = int(points[0][1]) + 22
+            else:
+                x1 = int(shape["x1"])
+                x2 = int(shape["x2"])
+                cv2.line(
+                    preview,
+                    (x1, 0),
+                    (x1, preview.shape[0] - 1),
+                    self._style["line_color"],
+                    1,
+                )
+                cv2.line(
+                    preview,
+                    (x2 - 1, 0),
+                    (x2 - 1, preview.shape[0] - 1),
+                    self._style["line_color"],
+                    1,
+                )
+                label_x = x1 + 6
+                label_y = 22
             cv2.putText(
                 preview,
                 f"L{lane}",
-                (x1 + 6, 22),
+                (label_x, label_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 self._style["ready_color"],

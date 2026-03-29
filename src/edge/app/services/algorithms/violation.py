@@ -6,7 +6,7 @@ import numpy as np
 
 from ...core.config import get_settings
 from ...core.state import NodeState
-from .lane_layout import binding_target_lanes, resolve_lane_by_center_x
+from .lane_layout import binding_target_lanes, resolve_lane_by_point
 from .rules import toe_proxy_points_from_keypoints
 
 logger = logging.getLogger("edge.yolo")
@@ -168,13 +168,17 @@ class ViolationAlgo:
 
     def _resolve_lane(self, track_id: Optional[int], idx: int, item: Any, frame_width: int) -> int:
         bbox = self._extract_box(item)
-        if isinstance(bbox, list) and len(bbox) >= 4 and frame_width > 0:
+        if isinstance(bbox, list) and len(bbox) >= 4 and frame_width > 0 and getattr(self, "_frame_height", 0) > 0:
             center_x = float(bbox[0] + bbox[2]) / 2.0
-            lane = resolve_lane_by_center_x(
-                center_x=center_x,
+            center_y = float(bbox[1] + bbox[3]) / 2.0
+            lane = resolve_lane_by_point(
+                x=center_x,
+                y=center_y,
                 frame_width=frame_width,
+                frame_height=self._frame_height,
                 target_lanes=binding_target_lanes(self.state.bindings, int(self.state.config.get("lane_count", 1) or 1)),
                 lane_ranges_text=self.settings.lane_x_ranges,
+                lane_polygons_text=self.settings.lane_polygons,
             )
             if lane is not None:
                 return lane
@@ -246,6 +250,7 @@ class ViolationAlgo:
         current_time: int,
     ) -> List[Dict]:
         events: List[Dict] = []
+        self._frame_height = int(frame.shape[0]) if frame is not None else 0
 
         expected_start = self.state.expected_start_time
         if expected_start is not None and current_time < int(expected_start):

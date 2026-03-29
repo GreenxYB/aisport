@@ -85,6 +85,10 @@ class Settings(BaseSettings):
         "",
         description="Optional lane x ranges like '1:0-160,2:160-320' in preview-space pixels",
     )
+    lane_polygons: str = Field(
+        "",
+        description="Optional lane polygons like '1:20-40|280-40|240-620|40-620;2:...'",
+    )
     kps_conf_thres: float = Field(0.5, description="Keypoint confidence threshold")
     toe_proxy_scale: float = Field(
         0.45, description="Toe proxy extrapolation factor from knee->ankle direction"
