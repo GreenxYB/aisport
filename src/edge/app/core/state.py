@@ -43,3 +43,5 @@ class NodeState(BaseModel):
     last_false_start_ts: Optional[int] = None
     last_toe_proxy_debug: Optional[Dict[str, Any]] = None
     last_toe_proxy_ts: Optional[int] = None
+    lane_layout_debug: Optional[Dict[str, Any]] = None
+    last_lane_observation_ts: Optional[int] = None

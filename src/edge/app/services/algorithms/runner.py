@@ -84,6 +84,7 @@ class AlgorithmRunner:
     ) -> List[Dict]:
         role = (self.settings.node_role or "START").upper()
         events: List[Dict] = []
+        self._record_lane_debug(frame, ts_ms, dets, track_ids)
 
         if role in {"START", "ALL_IN_ONE"}:
             events.extend(self._run_face_binding(frame, ts_ms, dets))
@@ -110,6 +111,58 @@ class AlgorithmRunner:
                 events.append(finish_report)
 
         return events
+
+    def _record_lane_debug(
+        self,
+        frame: np.ndarray,
+        ts_ms: float,
+        dets: List[Dict],
+        track_ids: List[int],
+    ) -> None:
+        if frame is None or frame.size == 0:
+            return
+        lane_targets = self._binding_target_lanes()
+        shapes = build_lane_shapes(
+            frame_width=frame.shape[1],
+            frame_height=frame.shape[0],
+            target_lanes=lane_targets,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
+        observations = []
+        for idx, det in enumerate(dets):
+            bbox = det.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = bbox[:4]
+            center_x = float((x1 + x2) / 2.0)
+            center_y = float((y1 + y2) / 2.0)
+            lane = resolve_lane_by_point(
+                x=center_x,
+                y=center_y,
+                frame_width=frame.shape[1],
+                frame_height=frame.shape[0],
+                target_lanes=lane_targets,
+                lane_ranges_text=self.settings.lane_x_ranges,
+                lane_polygons_text=self.settings.lane_polygons,
+                lane_layout_file=self.settings.lane_layout_file,
+            )
+            observations.append(
+                {
+                    "track_id": track_ids[idx] if idx < len(track_ids) else None,
+                    "lane": lane,
+                    "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                    "center": [center_x, center_y],
+                    "score": float(det.get("score") or 0.0),
+                }
+            )
+        self.state.lane_layout_debug = {
+            "target_lanes": lane_targets,
+            "shapes": shapes,
+            "observations": observations,
+        }
+        self.state.last_lane_observation_ts = int(ts_ms)
 
     def _run_face_binding(self, frame: np.ndarray, ts_ms: float, dets: List[Dict]) -> List[Dict]:
         expected_start = self.state.expected_start_time
