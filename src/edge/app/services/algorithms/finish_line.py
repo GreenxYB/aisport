@@ -48,6 +48,7 @@ class FinishLineAlgo:
                 target_lanes=binding_target_lanes(self.state.bindings, int(self.state.config.get("lane_count", 1) or 1)),
                 lane_ranges_text=self.settings.lane_x_ranges,
                 lane_polygons_text=self.settings.lane_polygons,
+                lane_layout_file=self.settings.lane_layout_file,
             )
             if lane is not None:
                 return lane
