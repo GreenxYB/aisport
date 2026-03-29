@@ -6,17 +6,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def binding_target_lanes(bindings: List[Dict[str, Any]], lane_count: int) -> List[int]:
-    lanes = [
+    binding_lanes = [
         int(item.get("lane"))
         for item in bindings
         if isinstance(item, dict) and isinstance(item.get("lane"), int)
     ]
-    if lanes:
-        return sorted(dict.fromkeys(lanes))
-    return list(range(1, max(int(lane_count), 0) + 1))
+    # 绑定阶段及后续状态判断统一以“已配置绑定的跑道”为准：
+    # 不再按 lane_count 扩展到全跑道，避免无人跑道阻塞 ready。
+    if binding_lanes:
+        return sorted(dict.fromkeys(binding_lanes))
+    return []
 
 
-def _clamp_point(x: float, y: float, frame_width: int, frame_height: int) -> Tuple[int, int]:
+def _clamp_point(
+    x: float, y: float, frame_width: int, frame_height: int
+) -> Tuple[int, int]:
     xi = max(0, min(frame_width - 1, int(round(x))))
     yi = max(0, min(frame_height - 1, int(round(y))))
     return xi, yi
@@ -75,7 +79,9 @@ def parse_lane_polygons(
                 for point in points:
                     if not isinstance(point, (list, tuple)) or len(point) < 2:
                         continue
-                    normalized.append(_clamp_point(point[0], point[1], frame_width, frame_height))
+                    normalized.append(
+                        _clamp_point(point[0], point[1], frame_width, frame_height)
+                    )
                 if len(normalized) >= 3:
                     polygons[lane] = normalized
             if polygons:
@@ -119,10 +125,36 @@ def load_lane_polygons_from_file(
     payload = _load_lane_layout_payload(lane_layout_file)
     if payload is None:
         return {}
-    src_width = int(payload.get("frame_width") or frame_width or 1)
-    src_height = int(payload.get("frame_height") or frame_height or 1)
-    scale_x = frame_width / max(src_width, 1)
-    scale_y = frame_height / max(src_height, 1)
+    path = Path(str(lane_layout_file))
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    calib_width: Optional[float] = None
+    calib_height: Optional[float] = None
+    if isinstance(payload, dict):
+        raw_w = payload.get("frame_width", payload.get("width"))
+        raw_h = payload.get("frame_height", payload.get("height"))
+        try:
+            if raw_w is not None:
+                calib_width = float(raw_w)
+            if raw_h is not None:
+                calib_height = float(raw_h)
+        except (TypeError, ValueError):
+            calib_width = None
+            calib_height = None
+
+    scale_x = 1.0
+    scale_y = 1.0
+    if calib_width and calib_width > 0 and calib_height and calib_height > 0:
+        scale_x = float(frame_width) / float(calib_width)
+        scale_y = float(frame_height) / float(calib_height)
+
     lanes = payload.get("lanes") if isinstance(payload, dict) else payload
     if not isinstance(lanes, list):
         return {}
@@ -139,9 +171,14 @@ def load_lane_polygons_from_file(
         for point in points:
             if not isinstance(point, (list, tuple)) or len(point) < 2:
                 continue
-            normalized.append(
-                _clamp_point(float(point[0]) * scale_x, float(point[1]) * scale_y, frame_width, frame_height)
-            )
+            px = point[0]
+            py = point[1]
+            try:
+                sx = float(px) * scale_x
+                sy = float(py) * scale_y
+            except (TypeError, ValueError):
+                continue
+            normalized.append(_clamp_point(sx, sy, frame_width, frame_height))
         if len(normalized) >= 3:
             polygons[lane] = normalized
     return polygons
@@ -223,7 +260,9 @@ def inspect_lane_layout(
         info["source"] = "inline_polygon"
         info["available"] = True
         info["calibrated"] = True
-        info["covered_lanes"] = sorted(lane for lane in target_lanes if lane in polygons)
+        info["covered_lanes"] = sorted(
+            lane for lane in target_lanes if lane in polygons
+        )
         if info["covered_lanes"] != sorted(target_lanes):
             missing = [lane for lane in target_lanes if lane not in polygons]
             info["warning"] = f"inline lane polygons missing lanes: {missing}"
@@ -244,7 +283,9 @@ def inspect_lane_layout(
     return info
 
 
-def parse_lane_ranges(lane_ranges_text: str, frame_width: int) -> Dict[int, tuple[int, int]]:
+def parse_lane_ranges(
+    lane_ranges_text: str, frame_width: int
+) -> Dict[int, tuple[int, int]]:
     ranges: Dict[int, tuple[int, int]] = {}
     if not lane_ranges_text:
         return ranges
@@ -310,7 +351,12 @@ def build_lane_shapes(
                         "kind": "segment",
                         "x1": x1,
                         "x2": x2,
-                        "points": [(x1, 0), (x2 - 1, 0), (x2 - 1, frame_height - 1), (x1, frame_height - 1)],
+                        "points": [
+                            (x1, 0),
+                            (x2 - 1, 0),
+                            (x2 - 1, frame_height - 1),
+                            (x1, frame_height - 1),
+                        ],
                     }
                 )
         if shapes:
@@ -329,7 +375,12 @@ def build_lane_shapes(
                 "kind": "segment",
                 "x1": x1,
                 "x2": x2,
-                "points": [(x1, 0), (x2 - 1, 0), (x2 - 1, frame_height - 1), (x1, frame_height - 1)],
+                "points": [
+                    (x1, 0),
+                    (x2 - 1, 0),
+                    (x2 - 1, frame_height - 1),
+                    (x1, frame_height - 1),
+                ],
             }
         )
     return shapes
@@ -345,9 +396,7 @@ def _point_in_polygon(x: float, y: float, polygon: List[Tuple[int, int]]) -> boo
         denom = float(yj - yi)
         if abs(denom) < 1e-6:
             denom = 1e-6 if denom >= 0 else -1e-6
-        intersects = ((yi > y) != (yj > y)) and (
-            x < (xj - xi) * (y - yi) / denom + xi
-        )
+        intersects = ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / denom + xi)
         if intersects:
             inside = not inside
         j = i

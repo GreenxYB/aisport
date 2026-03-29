@@ -410,7 +410,7 @@ class EdgePipeline:
         video_source = self.settings.rtsp_url or self.settings.camera_device
         if self.settings.simulate_camera:
             video_source = None  # 模拟模式
-        logger.info(f"视频源: {video_source}")
+        # logger.info(f"视频源: {video_source}")
 
         # 创建视频捕获线程
         self.capture_thread = VideoCaptureThread(
@@ -697,7 +697,7 @@ class EdgePipeline:
             return None
 
         if not ok:
-            with self._preview_lock:
+            with self._preview_lock: 
                 self._last_encode_error = "imencode_failed"
             return None
 

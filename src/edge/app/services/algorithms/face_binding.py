@@ -121,6 +121,12 @@ class FaceBindingAlgo:
                         "name": user.get("user_info"),
                     }
                 )
+            elif res.get("error_code") != 0:
+                logger.warning(
+                    "face search failed error_code=%s error_msg=%s",
+                    res.get("error_code"),
+                    res.get("error_msg"),
+                )
             return res_list
         except Exception as exc:
             logger.error("face search error: %s", exc)
