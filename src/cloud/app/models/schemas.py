@@ -44,6 +44,7 @@ class Session(BaseModel):
     countdown_seconds: int = 3
     audio_plan: str = "START_321_GO"
     tracking_active: bool = True
+    expected_start_time: Optional[int] = None
 
 
 class StartMonitorRequest(BaseModel):

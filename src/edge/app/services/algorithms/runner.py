@@ -33,6 +33,8 @@ class AlgorithmRunner:
         self.violation = ViolationAlgo(self.state)
         self.finish = FinishLineAlgo(self.state)
         self._last_run_ms: Optional[int] = None
+        self._last_face_report_ms: Optional[int] = None
+        self._last_face_signature: Optional[str] = None
         self._log_path = Path(self.settings.algo_log_path)
 
     def process_frame(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
@@ -40,22 +42,129 @@ class AlgorithmRunner:
             return []
         if not self._should_run(ts_ms):
             return []
+        events = self._process_role_logic(
+            frame=frame,
+            ts_ms=ts_ms,
+            dets=[],
+            track_ids=[],
+            keypoints=[],
+        )
+        return self._finalize_events(events, ts_ms)
+
+    def process_pipeline_result(
+        self, frame: np.ndarray, tracker_result, ts_ms: float
+    ) -> List[Dict]:
+        """
+        Use tracked detections from the pipeline so start/finish business logic
+        actually follows the same boxes, IDs, and keypoints shown in preview.
+        """
+        if not self.settings.algo_enabled:
+            return []
+        if not self._should_run(ts_ms):
+            return []
+
+        dets, track_ids, keypoints = self._extract_tracker_inputs(tracker_result)
+        events = self._process_role_logic(
+            frame=frame,
+            ts_ms=ts_ms,
+            dets=dets,
+            track_ids=track_ids,
+            keypoints=keypoints,
+        )
+        return self._finalize_events(events, ts_ms)
+
+    def _process_role_logic(
+        self,
+        frame: np.ndarray,
+        ts_ms: float,
+        dets: List[Dict],
+        track_ids: List[int],
+        keypoints: List,
+    ) -> List[Dict]:
+        role = (self.settings.node_role or "START").upper()
         events: List[Dict] = []
 
-        # Placeholder calls; replace with real models later
-        if self.state.phase == NodePhase.BINDING:
-            events.extend(self.face.process(frame, ts_ms))
-        if self.state.phase == NodePhase.MONITORING:
-            events.extend(self.violation.process(frame, ts_ms))
+        if role in {"START", "ALL_IN_ONE"}:
+            events.extend(self._run_face_binding(frame, ts_ms))
+
+        if self.state.phase == NodePhase.MONITORING and role in {"START", "ALL_IN_ONE"}:
+            events.extend(
+                self.violation.process_frame_logic(
+                    frame=frame,
+                    track_ids=track_ids,
+                    boxes=dets,
+                    kps=keypoints,
+                    current_time=int(ts_ms),
+                )
+            )
+
+        if self.state.phase == NodePhase.MONITORING and role in {"FINISH", "ALL_IN_ONE"}:
             finish_report = self.finish.process_detections(
-                dets=self.violation.last_dets,
-                track_ids=self.violation.last_track_ids,
+                dets=dets,
+                track_ids=track_ids,
                 ts_ms=ts_ms,
                 frame_shape=frame.shape[:2],
             )
             if finish_report:
                 events.append(finish_report)
 
+        return events
+
+    def _run_face_binding(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
+        expected_start = self.state.expected_start_time
+        in_binding_window = self.state.phase == NodePhase.BINDING or (
+            self.state.phase == NodePhase.MONITORING
+            and expected_start is not None
+            and int(ts_ms) < int(expected_start)
+        )
+        if not in_binding_window:
+            return []
+
+        interval_ms = int(max(self.settings.face_report_interval_sec, 0.2) * 1000)
+        now_ms = int(ts_ms)
+        if self._last_face_report_ms is not None and now_ms - self._last_face_report_ms < interval_ms:
+            return []
+
+        events = self.face.process(frame, ts_ms)
+        if not events:
+            return []
+
+        signature = json.dumps(events[0].get("data", []), ensure_ascii=False, sort_keys=True)
+        if signature == self._last_face_signature and self._last_face_report_ms is not None:
+            return []
+
+        self._last_face_signature = signature
+        self._last_face_report_ms = now_ms
+        return events
+
+    def _extract_tracker_inputs(self, tracker_result) -> tuple[List[Dict], List[int], List]:
+        if tracker_result is None:
+            return [], [], []
+
+        raw_tracks = getattr(tracker_result, "result", None)
+        raw_keypoints = getattr(tracker_result, "keypoints", None) or []
+        if raw_tracks is None or len(raw_tracks) == 0:
+            return [], [], []
+
+        dets: List[Dict] = []
+        track_ids: List[int] = []
+        for idx, row in enumerate(raw_tracks):
+            if len(row) < 7:
+                continue
+            x1, y1, x2, y2, track_id, conf, cls = row[:7]
+            keypoints = raw_keypoints[idx] if idx < len(raw_keypoints) else []
+            dets.append(
+                {
+                    "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                    "score": float(conf),
+                    "class_id": int(cls),
+                    "keypoints": keypoints,
+                }
+            )
+            track_ids.append(int(track_id))
+        return dets, track_ids, [d.get("keypoints") for d in dets]
+
+    def _finalize_events(self, events: List[Dict], ts_ms: float) -> List[Dict]:
         # Add common fields
         for ev in events:
             ev.setdefault("node_id", self.state.node_id)
@@ -82,20 +191,6 @@ class AlgorithmRunner:
             self.state.last_algo_ts = int(ts_ms)
 
         return events
-
-    def process_pipeline_result(
-        self, frame: np.ndarray, tracker_result, ts_ms: float
-    ) -> List[Dict]:
-        """
-        Process the result from the inference pipeline.
-        tracker_result: TrackerResults object containing tracks and keypoints.
-        """
-        # Update capture stats here or in pipeline.
-        # For now, we delegate to the existing frame processing logic
-        # which handles phase checks and event generation.
-        # In the future, we can use tracker_result.result (tracks) and tracker_result.keypoints directly.
-
-        return self.process_frame(frame, ts_ms)
 
     def _should_run(self, ts_ms: float) -> bool:
         interval_ms = int(1000 / max(self.settings.algo_target_fps, 1))

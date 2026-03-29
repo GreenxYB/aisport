@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     algo_enabled: bool = Field(True, description="Enable algorithm runner")
     algo_target_fps: int = Field(5, description="Target FPS for algorithm processing")
     algo_log_path: str = Field("logs/alg_events.jsonl", description="Algorithm event log")
+    face_report_interval_sec: float = Field(
+        2.0, description="Min interval seconds between Baidu face binding reports"
+    )
     yolo_backend: str = Field("pt", description="YOLO backend: pt or trt")
     yolo_engine_path: str = Field("yolo11n-pose-fp16.engine", description="YOLO TRT engine path")
     yolo_names_path: str = Field("pose.names", description="YOLO class names file")

@@ -128,6 +128,7 @@ class SessionOrchestrator:
             return
 
         expected_start_time = int(time.time() * 1000) + session.start_delay_ms
+        self._session_service.set_expected_start_time(session.session_id, expected_start_time)
         queued = 0
         for node_id in required:
             command = self._session_service.build_start_command(

@@ -245,3 +245,118 @@ def test_session_auto_orchestrates_init_binding_and_start():
             assert start_cmd["config"]["tracking_active"] is True
             assert isinstance(start_cmd["config"]["expected_start_time"], int)
             ws.__exit__(None, None, None)
+
+
+def test_session_results_aggregate_finish_and_false_start():
+    client = build_client()
+
+    create = client.post(
+        "/sessions",
+        json={
+            "project_type": "200m",
+            "lane_count": 8,
+            "start_node_id": 1,
+            "finish_node_id": 2,
+            "tracking_node_ids": [],
+            "bindings": [
+                {"lane": 1, "student_id": "S101", "feature_id": "F001"},
+                {"lane": 2, "student_id": "S102", "feature_id": "F002"},
+            ],
+            "auto_start": False,
+        },
+    )
+    assert create.status_code == 200
+    session_id = create.json()["session_id"]
+
+    sockets = []
+    for node_id, role in [(1, "START"), (2, "FINISH")]:
+        ws = client.websocket_connect("/nodes/ws")
+        ws.__enter__()
+        ws.send_json(
+            {
+                "node_id": node_id,
+                "node_role": role,
+                "site_id": "lab-a",
+                "capabilities": ["camera"],
+            }
+        )
+        _ = ws.receive_json()
+        ws.send_json(
+            {
+                "msg_type": "NODE_STATUS",
+                "node_id": node_id,
+                "session_id": session_id,
+                "timestamp": 1234567890 + node_id,
+                "data": {
+                    "phase": "BINDING",
+                    "binding_ready": True,
+                    "camera_ready": True,
+                },
+            }
+        )
+        sockets.append(ws)
+
+    start = client.post(
+        f"/sessions/{session_id}/commands/start-monitor",
+        json={
+            "expected_start_time": 1773000005000,
+            "countdown_seconds": 3,
+            "tracking_active": True,
+            "audio_plan": "START_321_GO",
+        },
+    )
+    assert start.status_code == 200
+
+    for ws in sockets:
+        _ = ws.receive_json()
+
+    violation = client.post(
+        "/nodes/reports/violation",
+        json={
+            "msg_type": "VIOLATION_EVENT",
+            "node_id": 1,
+            "session_id": session_id,
+            "timestamp": 1773000004000,
+            "data": [
+                {
+                    "event": "FALSE_START",
+                    "lane": 1,
+                    "track_id": 11,
+                }
+            ],
+        },
+    )
+    assert violation.status_code == 200
+
+    finish = client.post(
+        "/nodes/reports/finish",
+        json={
+            "msg_type": "FINISH_REPORT",
+            "node_id": 2,
+            "session_id": session_id,
+            "timestamp": 1773000013000,
+            "data": [
+                {"lane": 1, "track_id": 11, "rank": 1, "finish_ts": 1773000012000},
+                {"lane": 2, "track_id": 22, "rank": 2, "finish_ts": 1773000012400},
+            ],
+        },
+    )
+    assert finish.status_code == 200
+
+    results = client.get(f"/sessions/{session_id}/results")
+    assert results.status_code == 200
+    payload = results.json()
+    assert payload["expected_start_time"] == 1773000005000
+    assert len(payload["results"]) == 2
+    lane1 = next(item for item in payload["results"] if item["lane"] == 1)
+    lane2 = next(item for item in payload["results"] if item["lane"] == 2)
+    assert lane1["student_id"] == "S101"
+    assert lane1["false_start"] is True
+    assert lane1["elapsed_ms"] == 7000
+    assert lane1["rank"] == 1
+    assert lane2["student_id"] == "S102"
+    assert lane2["false_start"] is False
+    assert lane2["elapsed_ms"] == 7400
+
+    for ws in sockets:
+        ws.__exit__(None, None, None)

@@ -17,6 +17,9 @@ class NodeConnectionManager:
         self._last_id_report: dict[int, dict[str, Any]] = {}
         self._last_violation: dict[int, dict[str, Any]] = {}
         self._last_finish: dict[int, dict[str, Any]] = {}
+        self._id_reports_by_session: dict[str, list[dict[str, Any]]] = {}
+        self._violations_by_session: dict[str, list[dict[str, Any]]] = {}
+        self._finishes_by_session: dict[str, list[dict[str, Any]]] = {}
 
     async def register(self, websocket: WebSocket, payload: NodeConnectPayload) -> None:
         async with self._lock:
@@ -49,11 +52,15 @@ class NodeConnectionManager:
 
     async def record_violation(self, report: ViolationReport) -> None:
         async with self._lock:
-            self._last_violation[report.node_id] = report.model_dump()
+            payload = report.model_dump()
+            self._last_violation[report.node_id] = payload
+            self._violations_by_session.setdefault(report.session_id, []).append(payload)
 
     async def record_finish(self, report: FinishReport) -> None:
         async with self._lock:
-            self._last_finish[report.node_id] = report.model_dump()
+            payload = report.model_dump()
+            self._last_finish[report.node_id] = payload
+            self._finishes_by_session.setdefault(report.session_id, []).append(payload)
 
     async def record_ack(self, ack: dict[str, Any]) -> None:
         async with self._lock:
@@ -62,6 +69,9 @@ class NodeConnectionManager:
     async def record_id_report(self, report: dict[str, Any]) -> None:
         async with self._lock:
             self._last_id_report[int(report["node_id"])] = report
+            session_id = str(report.get("session_id") or "")
+            if session_id:
+                self._id_reports_by_session.setdefault(session_id, []).append(report)
 
     async def send_command(self, node_id: int, payload: CommandPayload) -> bool:
         async with self._lock:
@@ -86,6 +96,14 @@ class NodeConnectionManager:
                     }
                 )
             return sorted(rows, key=lambda item: item["node_id"])
+
+    async def get_session_reports(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+        async with self._lock:
+            return {
+                "id_reports": list(self._id_reports_by_session.get(session_id, [])),
+                "violations": list(self._violations_by_session.get(session_id, [])),
+                "finishes": list(self._finishes_by_session.get(session_id, [])),
+            }
 
     @staticmethod
     def _now_iso() -> str:

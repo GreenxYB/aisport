@@ -67,6 +67,13 @@ class SessionService:
         session.status = status
         return session
 
+    def set_expected_start_time(self, session_id: str, expected_start_time: int) -> Session | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        session.expected_start_time = expected_start_time
+        return session
+
     @staticmethod
     def node_ids(session: Session) -> List[int]:
         ids = [session.start_node_id, session.finish_node_id, *session.tracking_node_ids]

@@ -206,6 +206,7 @@ class CommandHandler:
         self.state.expected_start_time = (payload.config or {}).get(
             "expected_start_time"
         )
+        self.state.config["ready_ts"] = int(time.time() * 1000)
         # 激活跟踪功能
         self.state.config["tracking_active"] = (payload.config or {}).get(
             "tracking_active", True

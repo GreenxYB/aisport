@@ -236,8 +236,7 @@ class ViolationAlgo:
         events: List[Dict] = []
 
         expected_start = self.state.expected_start_time
-        ready_ts = self.state.config.get("ready_ts")
-        if expected_start is not None and ready_ts is not None and current_time < int(expected_start):
+        if expected_start is not None and current_time < int(expected_start):
             if self.state.config.get("false_start_check", True):
                 line_y = self._scaled_start_line_y(frame)
                 debug_items: List[Dict[str, Any]] = []
