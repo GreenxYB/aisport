@@ -1,9 +1,12 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from ..models.schemas import FinishReport, NodeStatusReport, ViolationReport
 from common.protocol import CommandPayload, NodeConnectPayload
 from ..services.node_connection_manager import NodeConnectionManager, get_node_manager
 
 router = APIRouter()
+logger = logging.getLogger("cloud.nodes")
 
 
 @router.websocket("/ws")
@@ -20,18 +23,30 @@ async def node_ws(websocket: WebSocket, manager: NodeConnectionManager = Depends
         while True:
             message = await websocket.receive_json()
             msg_type = message.get("msg_type")
-            if msg_type == "NODE_STATUS":
-                await manager.update_status(NodeStatusReport(**message))
-            elif msg_type == "COMMAND_ACK":
-                await manager.record_ack(message)
-            elif msg_type == "ID_REPORT":
-                await manager.record_id_report(message)
-            elif msg_type == "VIOLATION_EVENT":
-                await manager.record_violation(ViolationReport(**message))
-            elif msg_type == "FINISH_REPORT":
-                await manager.record_finish(FinishReport(**message))
+            try:
+                if msg_type == "NODE_STATUS":
+                    await manager.update_status(NodeStatusReport(**message))
+                elif msg_type == "COMMAND_ACK":
+                    await manager.record_ack(message)
+                elif msg_type == "ID_REPORT":
+                    await manager.record_id_report(message)
+                elif msg_type == "VIOLATION_EVENT":
+                    await manager.record_violation(ViolationReport(**message))
+                elif msg_type == "FINISH_REPORT":
+                    await manager.record_finish(FinishReport(**message))
+                else:
+                    logger.debug("ignore websocket message without supported msg_type: %s", msg_type)
+            except Exception as exc:
+                logger.warning(
+                    "failed to process node websocket message node_id=%s msg_type=%s error=%s",
+                    node_id,
+                    msg_type,
+                    exc,
+                )
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        logger.exception("node websocket crashed node_id=%s error=%s", node_id, exc)
     finally:
         if node_id is not None:
             await manager.unregister(node_id)

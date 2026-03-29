@@ -58,6 +58,8 @@ class EdgeWsClient:
     def _run(self) -> None:
         try:
             asyncio.run(self._run_forever())
+        except asyncio.CancelledError:  # pragma: no cover
+            return
         except Exception as exc:  # pragma: no cover
             self.logger.error("Websocket client stopped unexpectedly: %s", exc)
 
@@ -70,7 +72,12 @@ class EdgeWsClient:
 
         while not self._stop_event.is_set():
             try:
-                async with websockets.connect(self.settings.cloud_ws_url, ping_interval=20, ping_timeout=20) as ws:
+                async with websockets.connect(
+                    self.settings.cloud_ws_url,
+                    ping_interval=30,
+                    ping_timeout=60,
+                    close_timeout=5,
+                ) as ws:
                     self._disconnect_count = 0
                     self.logger.info("cloud websocket connected url=%s", self.settings.cloud_ws_url)
                     await ws.send(json.dumps(self._build_connect_payload().model_dump()))
@@ -84,10 +91,12 @@ class EdgeWsClient:
                     finally:
                         status_task.cancel()
                         sender_task.cancel()
-                        with contextlib.suppress(Exception):
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
                             await status_task
-                        with contextlib.suppress(Exception):
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
                             await sender_task
+            except asyncio.CancelledError:
+                return
             except Exception as exc:
                 self._disconnect_count += 1
                 now = time.time()
