@@ -13,6 +13,7 @@ except ImportError as exc:
 
 from ..core.config import get_settings
 from ..core.state import NodeState
+from .algorithms.lane_layout import binding_target_lanes, build_lane_segments
 
 
 FrameCallback = Callable[[np.ndarray, float], None]  # frame, ts_ms
@@ -193,6 +194,7 @@ class CaptureManager:
                             self._style["line_color"],
                             self._style["line_thickness"],
                         )
+                    self._overlay_lane_guides(preview)
                     self._overlay_false_start(preview)
                     # Encode frame for preview
                     ret, buf = cv2.imencode(".jpg", preview)
@@ -411,3 +413,45 @@ class CaptureManager:
             self._style["font_thickness"],
             cv2.LINE_AA,
         )
+
+    def _overlay_lane_guides(self, preview: np.ndarray) -> None:
+        if not self.settings.display_lane_guides or preview is None or preview.size == 0:
+            return
+        lane_count = int(self.state.config.get("lane_count", 0) or 0) if self.state else 0
+        bindings = self.state.bindings if self.state else []
+        target_lanes = binding_target_lanes(bindings, lane_count)
+        segments = build_lane_segments(
+            frame_width=preview.shape[1],
+            target_lanes=target_lanes,
+            lane_ranges_text=self.settings.lane_x_ranges,
+        )
+        if not segments:
+            return
+        for segment in segments:
+            x1 = int(segment["x1"])
+            x2 = int(segment["x2"])
+            lane = int(segment["lane"])
+            cv2.line(
+                preview,
+                (x1, 0),
+                (x1, preview.shape[0] - 1),
+                self._style["line_color"],
+                1,
+            )
+            cv2.line(
+                preview,
+                (x2 - 1, 0),
+                (x2 - 1, preview.shape[0] - 1),
+                self._style["line_color"],
+                1,
+            )
+            cv2.putText(
+                preview,
+                f"L{lane}",
+                (x1 + 6, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                self._style["ready_color"],
+                2,
+                cv2.LINE_AA,
+            )

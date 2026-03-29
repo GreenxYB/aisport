@@ -18,8 +18,10 @@ class SessionCreate(BaseModel):
     tracking_node_ids: List[int] = Field(default_factory=list, example=[3, 6])
     bindings: List[Dict[str, Any]] = Field(default_factory=list)
     auto_start: bool = True
+    binding_timeout_sec: int = Field(10, ge=1, le=600)
     start_delay_ms: int = Field(5000, ge=1000)
     countdown_seconds: int = Field(3, ge=0, le=10)
+    race_timeout_sec: int = Field(60, ge=1, le=3600)
     audio_plan: str = "START_321_GO"
     tracking_active: bool = True
     sync_time_ms: Optional[int] = Field(
@@ -40,11 +42,15 @@ class Session(BaseModel):
     sync_time_ms: Optional[int] = None
     require_bindings: bool = False
     auto_start: bool = True
+    binding_timeout_sec: int = 10
     start_delay_ms: int = 5000
     countdown_seconds: int = 3
+    race_timeout_sec: int = 60
     audio_plan: str = "START_321_GO"
     tracking_active: bool = True
     expected_start_time: Optional[int] = None
+    finished_at_ms: Optional[int] = None
+    terminal_reason: Optional[str] = None
 
 
 class StartMonitorRequest(BaseModel):

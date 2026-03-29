@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     display_start_line: bool = Field(
         True, description="Draw start line on preview/snapshot for debugging"
     )
+    display_lane_guides: bool = Field(
+        True, description="Draw lane guide overlays on preview/snapshot for debugging"
+    )
     display_mirror: bool = Field(
         False, description="Mirror preview display and snapshot horizontally"
     )
@@ -78,6 +81,10 @@ class Settings(BaseSettings):
     yolo_imgsz: int = Field(640, description="YOLO inference image size")
     start_line_y: int = Field(480, description="Start line Y for false start (based on 640px height)")
     finish_line_y: int = Field(520, description="Finish line Y (based on 640px height)")
+    lane_x_ranges: str = Field(
+        "",
+        description="Optional lane x ranges like '1:0-160,2:160-320' in preview-space pixels",
+    )
     kps_conf_thres: float = Field(0.5, description="Keypoint confidence threshold")
     toe_proxy_scale: float = Field(
         0.45, description="Toe proxy extrapolation factor from knee->ankle direction"

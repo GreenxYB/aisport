@@ -186,7 +186,8 @@ async def get_session_results(
             if current is None or int(item.get("finish_ts", 0)) >= int(current.get("finish_ts", 0)):
                 latest_finish_by_lane[lane] = item
 
-    lanes = sorted(set(bindings_by_lane) | set(false_start_by_lane) | set(latest_finish_by_lane))
+    target_lanes = set(svc.target_lanes(session))
+    lanes = sorted(target_lanes | set(bindings_by_lane) | set(false_start_by_lane) | set(latest_finish_by_lane))
     results = []
     for lane in lanes:
         binding = bindings_by_lane.get(lane, {})
@@ -197,6 +198,19 @@ async def get_session_results(
         elapsed_ms = None
         if finish_ts is not None and session.expected_start_time is not None:
             elapsed_ms = finish_ts - int(session.expected_start_time)
+        result_status = "PENDING"
+        if false_start:
+            result_status = "FALSE_START"
+        elif finish_ts is not None:
+            result_status = "OK"
+        elif session.status == "BINDING_TIMEOUT":
+            result_status = "UNBOUND"
+        elif session.status in {"FINISHED", "RACE_TIMEOUT"} and session.expected_start_time is not None:
+            result_status = "DNF"
+        elif session.expected_start_time is None:
+            result_status = "WAIT_BINDING"
+        else:
+            result_status = "RUNNING"
         results.append(
             {
                 "lane": lane,
@@ -210,6 +224,7 @@ async def get_session_results(
                 "rank": finish.get("rank") if finish else None,
                 "false_start": bool(false_start),
                 "false_start_detail": false_start,
+                "result_status": result_status,
             }
         )
 
@@ -217,6 +232,8 @@ async def get_session_results(
         "session_id": session_id,
         "status": session.status,
         "expected_start_time": session.expected_start_time,
+        "finished_at_ms": session.finished_at_ms,
+        "terminal_reason": session.terminal_reason,
         "results": results,
         "report_counts": {
             "id_reports": len(reports["id_reports"]),

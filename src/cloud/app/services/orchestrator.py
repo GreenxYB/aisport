@@ -13,10 +13,12 @@ class SessionWorkflow:
     init_sent_to: set[int] = field(default_factory=set)
     binding_sent_to: set[int] = field(default_factory=set)
     start_sent: bool = False
+    stop_sent: bool = False
     init_sent_at_ms: int | None = None
     binding_sent_at_ms: int | None = None
     all_ready_at_ms: int | None = None
     start_sent_at_ms: int | None = None
+    stop_sent_at_ms: int | None = None
 
 
 class SessionOrchestrator:
@@ -78,6 +80,11 @@ class SessionOrchestrator:
 
         online_nodes = {row["node_id"]: row for row in await self._node_manager.list_online()}
         required = self._session_service.node_ids(session)
+        now_ms = int(time.time() * 1000)
+
+        if session.status in {"BINDING_TIMEOUT", "RACE_TIMEOUT", "FINISHED", "ABORTED"}:
+            await self._send_stop_if_needed(session, workflow, required, reason=session.status)
+            return
 
         all_online = all(bool(online_nodes.get(node_id, {}).get("online")) for node_id in required)
         if not all_online:
@@ -115,7 +122,23 @@ class SessionOrchestrator:
         if len(workflow.binding_sent_to) < len(required):
             return
 
+        if (
+            session.require_bindings
+            and not workflow.start_sent
+            and workflow.binding_sent_at_ms is not None
+            and now_ms - workflow.binding_sent_at_ms >= int(session.binding_timeout_sec * 1000)
+        ):
+            self._session_service.finish(
+                session.session_id,
+                status="BINDING_TIMEOUT",
+                reason="No valid binding completed before timeout",
+                finished_at_ms=now_ms,
+            )
+            await self._send_stop_if_needed(session, workflow, required, reason="BINDING_TIMEOUT")
+            return
+
         if not session.auto_start or workflow.start_sent:
+            await self._finalize_running_session_if_needed(session, workflow, required, now_ms)
             return
 
         all_ready = True
@@ -157,6 +180,77 @@ class SessionOrchestrator:
             workflow.start_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "RUNNING")
 
+        await self._finalize_running_session_if_needed(session, workflow, required, now_ms)
+
+    async def _finalize_running_session_if_needed(
+        self,
+        session,
+        workflow: SessionWorkflow,
+        required: list[int],
+        now_ms: int,
+    ) -> None:
+        if not workflow.start_sent or session.expected_start_time is None:
+            return
+        if session.status in {"BINDING_TIMEOUT", "RACE_TIMEOUT", "FINISHED", "ABORTED"}:
+            await self._send_stop_if_needed(session, workflow, required, reason=session.status)
+            return
+
+        reports = await self._node_manager.get_session_reports(session.session_id)
+        target_lanes = set(self._session_service.target_lanes(session))
+        finish_lanes = {
+            int(item.get("lane"))
+            for report in reports["finishes"]
+            for item in report.get("data") or []
+            if isinstance(item, dict) and isinstance(item.get("lane"), int)
+        }
+        false_start_lanes = {
+            int(item.get("lane"))
+            for report in reports["violations"]
+            for item in report.get("data") or []
+            if isinstance(item, dict)
+            and item.get("event") == "FALSE_START"
+            and isinstance(item.get("lane"), int)
+        }
+        terminal_lanes = finish_lanes | false_start_lanes
+
+        if target_lanes and target_lanes.issubset(terminal_lanes):
+            self._session_service.finish(
+                session.session_id,
+                status="FINISHED",
+                reason="All target lanes reached a terminal result",
+                finished_at_ms=now_ms,
+            )
+            await self._send_stop_if_needed(session, workflow, required, reason="FINISHED")
+            return
+
+        race_deadline_ms = int(session.expected_start_time) + int(session.race_timeout_sec * 1000)
+        if now_ms >= race_deadline_ms:
+            self._session_service.finish(
+                session.session_id,
+                status="RACE_TIMEOUT",
+                reason="Race timeout reached before all lanes finished",
+                finished_at_ms=now_ms,
+            )
+            await self._send_stop_if_needed(session, workflow, required, reason="RACE_TIMEOUT")
+
+    async def _send_stop_if_needed(
+        self,
+        session,
+        workflow: SessionWorkflow,
+        required: list[int],
+        reason: str,
+    ) -> None:
+        if workflow.stop_sent:
+            return
+        delivered = 0
+        for node_id in required:
+            command = self._session_service.build_stop_command(session, node_id, reason=reason)
+            if await self._node_manager.send_command(node_id, command):
+                delivered += 1
+        if delivered:
+            workflow.stop_sent = True
+            workflow.stop_sent_at_ms = int(time.time() * 1000)
+
     async def get_workflow_snapshot(self, session_id: str) -> dict | None:
         async with self._lock:
             workflow = self._workflows.get(session_id)
@@ -167,10 +261,12 @@ class SessionOrchestrator:
                 "init_sent_to": sorted(workflow.init_sent_to),
                 "binding_sent_to": sorted(workflow.binding_sent_to),
                 "start_sent": workflow.start_sent,
+                "stop_sent": workflow.stop_sent,
                 "init_sent_at_ms": workflow.init_sent_at_ms,
                 "binding_sent_at_ms": workflow.binding_sent_at_ms,
                 "all_ready_at_ms": workflow.all_ready_at_ms,
                 "start_sent_at_ms": workflow.start_sent_at_ms,
+                "stop_sent_at_ms": workflow.stop_sent_at_ms,
             }
 
 

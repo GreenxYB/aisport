@@ -436,6 +436,8 @@ class CommandHandler:
                 "expected_start_time": self.state.expected_start_time,
                 "ready_ts": self.state.config.get("ready_ts"),
                 "countdown_seconds": self.state.config.get("countdown_seconds"),
+                "binding_timeout_sec": self.state.config.get("binding_timeout_sec"),
+                "race_timeout_sec": self.state.config.get("race_timeout_sec"),
                 "last_false_start_ts": self.state.last_false_start_ts,
                 "node_role": self.settings.node_role,
             },
