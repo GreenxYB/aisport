@@ -36,6 +36,8 @@ class EdgeWsClient:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._outgoing: "queue.Queue[dict]" = queue.Queue()
+        self._last_disconnect_log_ts = 0.0
+        self._disconnect_count = 0
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -69,7 +71,8 @@ class EdgeWsClient:
         while not self._stop_event.is_set():
             try:
                 async with websockets.connect(self.settings.cloud_ws_url, ping_interval=20, ping_timeout=20) as ws:
-                    self.logger.info("Connected to cloud websocket: %s", self.settings.cloud_ws_url)
+                    self._disconnect_count = 0
+                    self.logger.info("cloud websocket connected url=%s", self.settings.cloud_ws_url)
                     await ws.send(json.dumps(self._build_connect_payload().model_dump()))
                     await ws.send(json.dumps(self.handler.build_status_report().model_dump()))
 
@@ -86,7 +89,17 @@ class EdgeWsClient:
                         with contextlib.suppress(Exception):
                             await sender_task
             except Exception as exc:
-                self.logger.warning("Cloud websocket disconnected: %s", exc)
+                self._disconnect_count += 1
+                now = time.time()
+                if now - self._last_disconnect_log_ts >= 10:
+                    self._last_disconnect_log_ts = now
+                    self.logger.warning(
+                        "cloud websocket disconnected retrying count=%s reason=%s",
+                        self._disconnect_count,
+                        exc,
+                    )
+                else:
+                    self.logger.debug("cloud websocket disconnected: %s", exc)
                 await asyncio.sleep(self.settings.ws_reconnect_interval_sec)
 
     async def _handle_message(self, ws, raw_message: str) -> None:
@@ -97,7 +110,7 @@ class EdgeWsClient:
             return
 
         if payload.get("type") == "CONNECTED":
-            self.logger.info("Cloud accepted websocket registration for node %s", payload.get("node_id"))
+            self.logger.info("cloud websocket registered node=%s", payload.get("node_id"))
             return
 
         if "cmd" not in payload:

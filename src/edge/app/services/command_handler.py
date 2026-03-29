@@ -118,13 +118,12 @@ class CommandHandler:
         # 获取对应的命令处理器
         handler = self._dispatch_map[payload.cmd]
         self.logger.info(
-            "接收命令 cmd=%s session=%s node=%s config=%s",
+            "cmd=%s session=%s node=%s summary=%s",
             payload.cmd,
             payload.session_id,
             payload.node_id,
-            payload.config,
+            self._summarize_command(payload),
         )
-        self.logger.info("payload_json=%s", payload.model_dump())
 
         # 执行命令处理
         handler(payload)
@@ -134,9 +133,9 @@ class CommandHandler:
         # 记录处理耗时
         elapsed_ms = int((time.time() - started) * 1000)
         self.logger.info(
-            "状态已更新 phase=%s last_cmd=%s elapsed_ms=%s",
+            "handled cmd=%s phase=%s elapsed_ms=%s",
+            payload.cmd,
             self.state.phase,
-            self.state.last_command,
             elapsed_ms,
         )
 
@@ -330,6 +329,27 @@ class CommandHandler:
         self.state.last_command = cmd
         self.state.last_updated_ms = int(time.time() * 1000)
 
+
+    @staticmethod
+    def _summarize_command(payload: CommandPayload) -> str:
+        config = payload.config or {}
+        if payload.cmd == "CMD_INIT":
+            return (
+                f"project_type={config.get('project_type')} "
+                f"lane_count={config.get('lane_count')}"
+            )
+        if payload.cmd == "CMD_BINDING_SYNC":
+            bindings = config.get("bindings") or []
+            return f"bindings={len(bindings)}"
+        if payload.cmd == "CMD_START_MONITOR":
+            return (
+                f"start_at={config.get('expected_start_time')} "
+                f"countdown={config.get('countdown_seconds', 3)} "
+                f"tracking={config.get('tracking_active', True)}"
+            )
+        if payload.cmd in {"CMD_STOP", "CMD_RESET_ROUND"}:
+            return f"reason={config.get('reason')}"
+        return "-"
 
     def build_status_report(self) -> NodeStatusReport:
         return NodeStatusReport(
