@@ -162,6 +162,10 @@ class CommandHandler:
         self.state.last_event_ts = None
         self.state.finish_reports_generated = 0
         self.state.last_finish_ts = None
+        self.state.binding_confirmed_students = []
+        self.state.binding_confirmed_at_ms = None
+        self.state.last_face_result = None
+        self.state.last_face_ts = None
         # 停止事件模拟
         self.event_sim.stop()
         self._touch(payload.cmd)
@@ -210,6 +214,9 @@ class CommandHandler:
         # 激活跟踪功能
         self.state.config["tracking_active"] = (payload.config or {}).get(
             "tracking_active", True
+        )
+        self.state.config["countdown_seconds"] = (payload.config or {}).get(
+            "countdown_seconds", 3
         )
 
         # 如果视频管道未运行,则启动它
@@ -267,6 +274,10 @@ class CommandHandler:
         self.state.expected_start_time = None
         self.state.stop_reason = None
         self.state.config["tracking_active"] = False
+        self.state.binding_confirmed_students = []
+        self.state.binding_confirmed_at_ms = None
+        self.state.last_face_result = None
+        self.state.last_face_ts = None
         self.state.last_false_start_event = None
         self.state.last_false_start_ts = None
         self.state.last_toe_proxy_debug = None
@@ -353,20 +364,58 @@ class CommandHandler:
         return "-"
 
     def build_status_report(self) -> NodeStatusReport:
+        binding_target_students = [
+            str(item.get("student_id"))
+            for item in self.state.bindings
+            if isinstance(item, dict) and item.get("student_id")
+        ]
+        confirmed_students = list(dict.fromkeys(self.state.binding_confirmed_students))
+        pending_students = [
+            student_id
+            for student_id in binding_target_students
+            if student_id not in confirmed_students
+        ]
+        binding_required = bool(binding_target_students) and self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}
+        binding_ready = (not binding_required) or not pending_students
+        now_ms = int(time.time() * 1000)
+        session_stage = self.state.phase.value
+        if self.state.phase == NodePhase.BINDING:
+            session_stage = "WAIT_BINDING" if binding_required and not binding_ready else "BOUND"
+        elif self.state.phase == NodePhase.MONITORING:
+            if self.state.expected_start_time and now_ms < int(self.state.expected_start_time):
+                session_stage = "COUNTDOWN"
+            else:
+                session_stage = "RUNNING"
+        elif self.state.phase == NodePhase.STOPPED:
+            session_stage = "STOPPED"
+
         return NodeStatusReport(
             node_id=self.state.node_id,
             session_id=self.state.session_id or "",
             timestamp=int(time.time() * 1000),
             data={
+                "session_stage": session_stage,
                 "phase": self.state.phase.value,
                 "last_command": self.state.last_command,
                 "capture_running": self.state.capture_running,
                 "capture_fps_est": self.state.capture_fps_est,
                 "last_frame_ts": self.state.last_frame_ts,
                 "capture_error": self.state.capture_error,
-                "binding_ready": bool(self.state.bindings),
+                "binding_required": binding_required,
+                "binding_ready": binding_ready,
+                "binding_target_count": len(binding_target_students),
+                "binding_confirmed_count": len(confirmed_students),
+                "binding_pending_count": len(pending_students),
+                "binding_confirmed_students": confirmed_students,
+                "binding_pending_students": pending_students,
+                "binding_confirmed_at_ms": self.state.binding_confirmed_at_ms,
+                "last_face_ts": self.state.last_face_ts,
                 "camera_ready": self.state.capture_running and not self.state.capture_error,
                 "tracking_active": bool(self.state.config.get("tracking_active", False)),
+                "expected_start_time": self.state.expected_start_time,
+                "ready_ts": self.state.config.get("ready_ts"),
+                "countdown_seconds": self.state.config.get("countdown_seconds"),
+                "last_false_start_ts": self.state.last_false_start_ts,
                 "node_role": self.settings.node_role,
             },
         )

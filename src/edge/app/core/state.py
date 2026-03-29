@@ -35,6 +35,8 @@ class NodeState(BaseModel):
     last_algo_ts: Optional[int] = None
     last_face_result: Optional[Dict[str, Any]] = None
     last_face_ts: Optional[int] = None
+    binding_confirmed_students: List[str] = Field(default_factory=list)
+    binding_confirmed_at_ms: Optional[int] = None
     last_false_start_event: Optional[Dict[str, Any]] = None
     last_false_start_ts: Optional[int] = None
     last_toe_proxy_debug: Optional[Dict[str, Any]] = None

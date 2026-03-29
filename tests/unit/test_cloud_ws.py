@@ -247,6 +247,99 @@ def test_session_auto_orchestrates_init_binding_and_start():
             ws.__exit__(None, None, None)
 
 
+def test_session_auto_orchestration_waits_for_start_binding_only():
+    with build_client() as client:
+        sockets = []
+        for node_id, role in [(1, "START"), (2, "FINISH")]:
+            ws = client.websocket_connect("/nodes/ws")
+            ws.__enter__()
+            ws.send_json(
+                {
+                    "node_id": node_id,
+                    "node_role": role,
+                    "site_id": "lab-a",
+                    "capabilities": ["camera"],
+                }
+            )
+            _ = ws.receive_json()
+            sockets.append(ws)
+
+        create = client.post(
+            "/sessions",
+            json={
+                "project_type": "200m",
+                "lane_count": 8,
+                "start_node_id": 1,
+                "finish_node_id": 2,
+                "tracking_node_ids": [],
+                "bindings": [{"lane": 1, "student_id": "S101", "feature_id": "F001"}],
+                "auto_start": True,
+            },
+        )
+        assert create.status_code == 200
+        session_id = create.json()["session_id"]
+
+        for ws in sockets:
+            _ = ws.receive_json()  # CMD_INIT
+            _ = ws.receive_json()  # CMD_BINDING_SYNC
+
+        sockets[0].send_json(
+            {
+                "msg_type": "NODE_STATUS",
+                "node_id": 1,
+                "session_id": session_id,
+                "timestamp": 1234567891,
+                "data": {
+                    "phase": "BINDING",
+                    "binding_ready": False,
+                    "camera_ready": True,
+                    "node_role": "START",
+                },
+            }
+        )
+        sockets[1].send_json(
+            {
+                "msg_type": "NODE_STATUS",
+                "node_id": 2,
+                "session_id": session_id,
+                "timestamp": 1234567892,
+                "data": {
+                    "phase": "BINDING",
+                    "binding_ready": False,
+                    "camera_ready": True,
+                    "node_role": "FINISH",
+                },
+            }
+        )
+
+        readiness = client.get(f"/sessions/{session_id}/readiness")
+        assert readiness.status_code == 200
+        assert readiness.json()["all_ready"] is False
+
+        sockets[0].send_json(
+            {
+                "msg_type": "NODE_STATUS",
+                "node_id": 1,
+                "session_id": session_id,
+                "timestamp": 1234567893,
+                "data": {
+                    "phase": "BINDING",
+                    "binding_ready": True,
+                    "camera_ready": True,
+                    "node_role": "START",
+                },
+            }
+        )
+
+        start_cmd_1 = sockets[0].receive_json()
+        start_cmd_2 = sockets[1].receive_json()
+        assert start_cmd_1["cmd"] == "CMD_START_MONITOR"
+        assert start_cmd_2["cmd"] == "CMD_START_MONITOR"
+
+        for ws in sockets:
+            ws.__exit__(None, None, None)
+
+
 def test_session_results_aggregate_finish_and_false_start():
     client = build_client()
 
@@ -359,4 +452,68 @@ def test_session_results_aggregate_finish_and_false_start():
     assert lane2["elapsed_ms"] == 7400
 
     for ws in sockets:
+        ws.__exit__(None, None, None)
+
+
+def test_session_diagnostics_exposes_workflow_and_node_status():
+    with build_client() as client:
+        ws = client.websocket_connect("/nodes/ws")
+        ws.__enter__()
+        ws.send_json(
+            {
+                "node_id": 1,
+                "node_role": "START",
+                "site_id": "lab-a",
+                "capabilities": ["camera"],
+            }
+        )
+        _ = ws.receive_json()
+
+        create = client.post(
+            "/sessions",
+            json={
+                "project_type": "200m",
+                "lane_count": 8,
+                "start_node_id": 1,
+                "finish_node_id": 1,
+                "tracking_node_ids": [],
+                "bindings": [{"lane": 1, "student_id": "S101"}],
+                "auto_start": False,
+            },
+        )
+        session_id = create.json()["session_id"]
+
+        _ = ws.receive_json()
+        _ = ws.receive_json()
+        ws.send_json(
+            {
+                "msg_type": "NODE_STATUS",
+                "node_id": 1,
+                "session_id": session_id,
+                "timestamp": 1234567890,
+                "data": {
+                    "phase": "BINDING",
+                    "session_stage": "WAIT_BINDING",
+                    "binding_ready": False,
+                    "binding_required": True,
+                    "binding_target_count": 1,
+                    "binding_confirmed_count": 0,
+                    "binding_pending_count": 1,
+                    "binding_pending_students": ["S101"],
+                    "camera_ready": True,
+                    "node_role": "START",
+                },
+            }
+        )
+
+        diagnostics = client.get(f"/sessions/{session_id}/diagnostics")
+        assert diagnostics.status_code == 200
+        payload = diagnostics.json()
+        assert payload["session"]["session_id"] == session_id
+        assert payload["workflow"]["init_sent_to"] == [1]
+        assert payload["workflow"]["binding_sent_to"] == [1]
+        assert payload["readiness"]["all_ready"] is False
+        assert payload["nodes"][0]["last_status"]["data"]["session_stage"] == "WAIT_BINDING"
+        assert payload["results"]["report_counts"]["finishes"] == 0
+
         ws.__exit__(None, None, None)

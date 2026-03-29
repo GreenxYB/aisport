@@ -178,6 +178,15 @@ class AlgorithmRunner:
                 if ev.get("msg_type") == "ID_REPORT":
                     self.state.last_face_result = ev
                     self.state.last_face_ts = int(ts_ms)
+                    data = ev.get("data") or []
+                    confirmed_students = list(self.state.binding_confirmed_students)
+                    for item in data:
+                        student_id = item.get("student_id") if isinstance(item, dict) else None
+                        if student_id and student_id not in confirmed_students:
+                            confirmed_students.append(str(student_id))
+                    self.state.binding_confirmed_students = confirmed_students
+                    if confirmed_students:
+                        self.state.binding_confirmed_at_ms = int(ts_ms)
                 if ev.get("msg_type") == "VIOLATION_EVENT":
                     data = ev.get("data") or []
                     if data and isinstance(data, list):

@@ -75,12 +75,14 @@ async def get_readiness(
         last_status = row.get("last_status") if row else None
         status_data = (last_status or {}).get("data", {})
         session_match = (last_status or {}).get("session_id") == session.session_id
-        ready = session_match and svc.is_node_ready(session, status_data)
+        node_role = row.get("node_role") if row else None
+        ready = session_match and svc.is_node_ready(session, status_data, node_role)
         online = bool(row and row.get("online"))
         all_ready = all_ready and online and ready
         nodes.append(
             {
                 "node_id": node_id,
+                "node_role": node_role,
                 "online": online,
                 "ready": ready,
                 "last_status": last_status,
@@ -108,7 +110,8 @@ async def dispatch_start_monitor(
         last_status = row.get("last_status") if row else None
         status_data = (last_status or {}).get("data", {})
         session_match = (last_status or {}).get("session_id") == session.session_id
-        ready = session_match and svc.is_node_ready(session, status_data)
+        node_role = row.get("node_role") if row else None
+        ready = session_match and svc.is_node_ready(session, status_data, node_role)
         online = bool(row and row.get("online"))
         if not (online and ready):
             missing_or_not_ready.append(node_id)
@@ -211,4 +214,45 @@ async def get_session_results(
             "violations": len(reports["violations"]),
             "finishes": len(reports["finishes"]),
         },
+    }
+
+
+@router.get("/{session_id}/diagnostics")
+async def get_session_diagnostics(
+    session_id: str,
+    svc: SessionService = Depends(get_service),
+    manager: NodeConnectionManager = Depends(get_node_manager),
+    orchestrator: SessionOrchestrator = Depends(get_orchestrator_service),
+):
+    session = svc.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    readiness = await get_readiness(session_id=session_id, svc=svc, manager=manager)
+    results = await get_session_results(session_id=session_id, svc=svc, manager=manager)
+    workflow = await orchestrator.get_workflow_snapshot(session_id)
+
+    online_nodes = {row["node_id"]: row for row in await manager.list_online()}
+    required_nodes = []
+    for node_id in svc.node_ids(session):
+        row = online_nodes.get(node_id, {})
+        required_nodes.append(
+            {
+                "node_id": node_id,
+                "node_role": row.get("node_role"),
+                "online": bool(row.get("online")),
+                "last_status": row.get("last_status"),
+                "last_ack": row.get("last_ack"),
+                "last_id_report": row.get("last_id_report"),
+                "last_violation": row.get("last_violation"),
+                "last_finish": row.get("last_finish"),
+            }
+        )
+
+    return {
+        "session": session.model_dump(),
+        "workflow": workflow,
+        "readiness": readiness,
+        "results": results,
+        "nodes": required_nodes,
     }

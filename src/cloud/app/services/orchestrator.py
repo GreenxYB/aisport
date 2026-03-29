@@ -13,6 +13,10 @@ class SessionWorkflow:
     init_sent_to: set[int] = field(default_factory=set)
     binding_sent_to: set[int] = field(default_factory=set)
     start_sent: bool = False
+    init_sent_at_ms: int | None = None
+    binding_sent_at_ms: int | None = None
+    all_ready_at_ms: int | None = None
+    start_sent_at_ms: int | None = None
 
 
 class SessionOrchestrator:
@@ -89,6 +93,7 @@ class SessionOrchestrator:
                 workflow.init_sent_to.add(node_id)
                 init_dispatched = True
         if init_dispatched:
+            workflow.init_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "INIT_SENT")
 
         if len(workflow.init_sent_to) < len(required):
@@ -104,6 +109,7 @@ class SessionOrchestrator:
                 workflow.binding_sent_to.add(node_id)
                 binding_dispatched = True
         if binding_dispatched:
+            workflow.binding_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "BINDING_SENT")
 
         if len(workflow.binding_sent_to) < len(required):
@@ -120,13 +126,16 @@ class SessionOrchestrator:
             if (last_status or {}).get("session_id") != session.session_id:
                 all_ready = False
                 break
-            if not self._session_service.is_node_ready(session, status_data):
+            node_role = row.get("node_role") if row else None
+            if not self._session_service.is_node_ready(session, status_data, node_role):
                 all_ready = False
                 break
 
         if not all_ready:
             return
 
+        if workflow.all_ready_at_ms is None:
+            workflow.all_ready_at_ms = int(time.time() * 1000)
         expected_start_time = int(time.time() * 1000) + session.start_delay_ms
         self._session_service.set_expected_start_time(session.session_id, expected_start_time)
         queued = 0
@@ -145,7 +154,24 @@ class SessionOrchestrator:
 
         if queued == len(required):
             workflow.start_sent = True
+            workflow.start_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "RUNNING")
+
+    async def get_workflow_snapshot(self, session_id: str) -> dict | None:
+        async with self._lock:
+            workflow = self._workflows.get(session_id)
+            if workflow is None:
+                return None
+            return {
+                "session_id": workflow.session_id,
+                "init_sent_to": sorted(workflow.init_sent_to),
+                "binding_sent_to": sorted(workflow.binding_sent_to),
+                "start_sent": workflow.start_sent,
+                "init_sent_at_ms": workflow.init_sent_at_ms,
+                "binding_sent_at_ms": workflow.binding_sent_at_ms,
+                "all_ready_at_ms": workflow.all_ready_at_ms,
+                "start_sent_at_ms": workflow.start_sent_at_ms,
+            }
 
 
 def get_orchestrator(

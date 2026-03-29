@@ -101,11 +101,13 @@ class SessionService:
         )
 
     @staticmethod
-    def is_node_ready(session: Session, status_data: dict | None) -> bool:
+    def is_node_ready(session: Session, status_data: dict | None, node_role: str | None = None) -> bool:
         if not status_data:
             return False
         camera_ready = bool(status_data.get("camera_ready"))
-        if session.require_bindings:
+        role = (node_role or status_data.get("node_role") or "").upper()
+        binding_required = session.require_bindings and role in {"START", "ALL_IN_ONE"}
+        if binding_required:
             return camera_ready and bool(status_data.get("binding_ready"))
         return camera_ready
 

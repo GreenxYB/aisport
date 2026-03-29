@@ -196,6 +196,47 @@ def test_reset_round_keeps_bindings_and_returns_to_binding():
     assert status["expected_start_time"] is None
 
 
+def test_status_binding_ready_requires_real_face_confirmation():
+    client = build_client()
+    client.post(
+        "/commands",
+        json={
+            "cmd": "CMD_INIT",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "config": {"lane_count": 8},
+        },
+    )
+    client.post(
+        "/commands",
+        json={
+            "cmd": "CMD_BINDING_SYNC",
+            "session_id": "RUN_TEST_001",
+            "node_id": 1,
+            "config": {
+                "bindings": [
+                    {"lane": 1, "student_id": "S101"},
+                    {"lane": 2, "student_id": "S102"},
+                ]
+            },
+        },
+    )
+
+    handler = get_handler()
+    status = handler.build_status_report().model_dump()
+    assert status["data"]["binding_required"] is True
+    assert status["data"]["binding_ready"] is False
+    assert status["data"]["binding_target_count"] == 2
+    assert status["data"]["binding_confirmed_count"] == 0
+
+    handler.state.binding_confirmed_students = ["S101", "S102"]
+    handler.state.binding_confirmed_at_ms = 1234567890
+    status = handler.build_status_report().model_dump()
+    assert status["data"]["binding_ready"] is True
+    assert status["data"]["binding_confirmed_count"] == 2
+    assert status["data"]["binding_pending_count"] == 0
+
+
 def test_preview_snapshot_uses_pipeline_cache():
     client = build_client()
     handler = get_handler()
