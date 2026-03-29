@@ -8,7 +8,7 @@ import numpy as np
 from ...core.config import get_settings
 from ...core.state import NodePhase, NodeState
 from .face_binding import FaceBindingAlgo
-from .lane_layout import binding_target_lanes, build_lane_segments, resolve_lane_by_center_x
+from .lane_layout import binding_target_lanes, build_lane_shapes, resolve_lane_by_point
 from .violation import ViolationAlgo
 from .finish_line import FinishLineAlgo
 
@@ -153,10 +153,12 @@ class AlgorithmRunner:
         if frame is None or frame.size == 0 or not dets or not lane_targets:
             return []
 
-        segments = build_lane_segments(
+        shapes = build_lane_shapes(
             frame_width=frame.shape[1],
+            frame_height=frame.shape[0],
             target_lanes=lane_targets,
             lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
         )
         best_by_lane: Dict[int, Dict[str, Any]] = {}
         for det in dets:
@@ -165,11 +167,15 @@ class AlgorithmRunner:
                 continue
             x1, y1, x2, y2 = bbox[:4]
             center_x = float((x1 + x2) / 2.0)
-            lane = resolve_lane_by_center_x(
-                center_x=center_x,
+            center_y = float((y1 + y2) / 2.0)
+            lane = resolve_lane_by_point(
+                x=center_x,
+                y=center_y,
                 frame_width=frame.shape[1],
+                frame_height=frame.shape[0],
                 target_lanes=lane_targets,
                 lane_ranges_text=self.settings.lane_x_ranges,
+                lane_polygons_text=self.settings.lane_polygons,
             )
             if lane is None:
                 continue
@@ -184,8 +190,8 @@ class AlgorithmRunner:
                 }
 
         candidates: List[Dict] = []
-        for segment in segments:
-            lane = int(segment["lane"])
+        for shape in shapes:
+            lane = int(shape["lane"])
             current = best_by_lane.get(lane)
             if current is None:
                 continue
