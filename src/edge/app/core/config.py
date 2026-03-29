@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     face_report_interval_sec: float = Field(
         2.0, description="Min interval seconds between Baidu face binding reports"
     )
+    face_search_max_attempts: int = Field(
+        3, description="Max Baidu face search attempts per candidate before giving up"
+    )
     yolo_backend: str = Field("pt", description="YOLO backend: pt or trt")
     yolo_engine_path: str = Field("yolo11n-pose-fp16.engine", description="YOLO TRT engine path")
     yolo_names_path: str = Field("pose.names", description="YOLO class names file")

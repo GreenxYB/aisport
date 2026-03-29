@@ -169,6 +169,7 @@ class CommandHandler:
         self.state.binding_confirmed_at_ms = None
         self.state.last_face_result = None
         self.state.last_face_ts = None
+        self.algo.face.reset(self.state.session_id)
         # 停止事件模拟
         self.event_sim.stop()
         self._touch(payload.cmd)
@@ -189,6 +190,7 @@ class CommandHandler:
         self.state.bindings = bindings or []
         # 保持在BINDING阶段,等待开始监控命令
         self.state.phase = NodePhase.BINDING
+        self.algo.face.reset(self.state.session_id)
 
         # 如果启用了事件模拟,启动模拟器
         if self.settings.simulate_events:
@@ -287,6 +289,7 @@ class CommandHandler:
         self.state.last_false_start_ts = None
         self.state.last_toe_proxy_debug = None
         self.state.last_toe_proxy_ts = None
+        self.algo.face.reset(self.state.session_id)
 
         self.event_sim.stop()
         self._touch(payload.cmd)

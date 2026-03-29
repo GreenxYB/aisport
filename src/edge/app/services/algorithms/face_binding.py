@@ -20,6 +20,9 @@ class FaceBindingAlgo:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = None
+        self._attempts_by_key: Dict[str, int] = {}
+        self._confirmed_keys: set[str] = set()
+        self._session_id: str | None = None
         if AipFace and self.settings.baidu_app_id and self.settings.baidu_api_key and self.settings.baidu_secret_key:
             self.client = AipFace(
                 self.settings.baidu_app_id,
@@ -28,6 +31,16 @@ class FaceBindingAlgo:
             )
         elif not AipFace:
             logger.warning("baidu-aip not installed; face binding disabled")
+
+    def reset(self, session_id: str | None = None) -> None:
+        self._attempts_by_key.clear()
+        self._confirmed_keys.clear()
+        self._session_id = session_id
+
+    def bind_session(self, session_id: str | None) -> None:
+        normalized = session_id or None
+        if normalized != self._session_id:
+            self.reset(normalized)
 
     def process(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
         if not self.client:
@@ -50,10 +63,18 @@ class FaceBindingAlgo:
             return []
         results: List[Dict] = []
         for candidate in candidates:
+            binding_key = str(candidate.get("binding_key") or "")
+            if binding_key and binding_key in self._confirmed_keys:
+                continue
+            attempts = self._attempts_by_key.get(binding_key, 0) if binding_key else 0
+            if binding_key and attempts >= max(1, int(self.settings.face_search_max_attempts)):
+                continue
             lane = candidate.get("lane")
             image = candidate.get("image")
             if image is None:
                 continue
+            if binding_key:
+                self._attempts_by_key[binding_key] = attempts + 1
             face_base64 = self._frame_to_base64(image)
             if not face_base64:
                 continue
@@ -61,10 +82,14 @@ class FaceBindingAlgo:
             if not matches:
                 continue
             top = matches[0]
+            if binding_key:
+                self._confirmed_keys.add(binding_key)
             enriched = {
                 **top,
                 "lane": int(lane) if isinstance(lane, int) else lane,
                 "bbox": candidate.get("bbox"),
+                "track_id": candidate.get("track_id"),
+                "attempt": self._attempts_by_key.get(binding_key, 1) if binding_key else 1,
             }
             results.append(enriched)
         if not results:

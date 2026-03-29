@@ -84,10 +84,11 @@ class AlgorithmRunner:
     ) -> List[Dict]:
         role = (self.settings.node_role or "START").upper()
         events: List[Dict] = []
+        self.face.bind_session(self.state.session_id)
         self._record_lane_debug(frame, ts_ms, dets, track_ids)
 
         if role in {"START", "ALL_IN_ONE"}:
-            events.extend(self._run_face_binding(frame, ts_ms, dets))
+            events.extend(self._run_face_binding(frame, ts_ms, dets, track_ids))
 
         if self.state.phase == NodePhase.MONITORING and role in {"START", "ALL_IN_ONE"}:
             events.extend(
@@ -164,7 +165,9 @@ class AlgorithmRunner:
         }
         self.state.last_lane_observation_ts = int(ts_ms)
 
-    def _run_face_binding(self, frame: np.ndarray, ts_ms: float, dets: List[Dict]) -> List[Dict]:
+    def _run_face_binding(
+        self, frame: np.ndarray, ts_ms: float, dets: List[Dict], track_ids: List[int]
+    ) -> List[Dict]:
         expected_start = self.state.expected_start_time
         in_binding_window = self.state.phase == NodePhase.BINDING or (
             self.state.phase == NodePhase.MONITORING
@@ -180,7 +183,7 @@ class AlgorithmRunner:
             return []
 
         lane_targets = self._binding_target_lanes()
-        candidates = self._build_face_candidates(frame, dets, lane_targets)
+        candidates = self._build_face_candidates(frame, dets, track_ids, lane_targets)
         if not candidates:
             return []
 
@@ -201,11 +204,18 @@ class AlgorithmRunner:
         return binding_target_lanes(self.state.bindings, lane_count)
 
     def _build_face_candidates(
-        self, frame: np.ndarray, dets: List[Dict], lane_targets: List[int]
+        self,
+        frame: np.ndarray,
+        dets: List[Dict],
+        track_ids: List[int],
+        lane_targets: List[int],
     ) -> List[Dict]:
         if frame is None or frame.size == 0 or not dets or not lane_targets:
             return []
 
+        confirmed_lanes = {
+            int(lane) for lane in self.state.binding_confirmed_lanes if isinstance(lane, int)
+        }
         shapes = build_lane_shapes(
             frame_width=frame.shape[1],
             frame_height=frame.shape[0],
@@ -215,7 +225,7 @@ class AlgorithmRunner:
             lane_layout_file=self.settings.lane_layout_file,
         )
         best_by_lane: Dict[int, Dict[str, Any]] = {}
-        for det in dets:
+        for idx, det in enumerate(dets):
             bbox = det.get("bbox")
             if not isinstance(bbox, list) or len(bbox) < 4:
                 continue
@@ -234,14 +244,19 @@ class AlgorithmRunner:
             )
             if lane is None:
                 continue
+            if lane in confirmed_lanes:
+                continue
             score = float(det.get("score") or 0.0)
             area = max(1.0, float(x2 - x1) * float(y2 - y1))
+            track_id = track_ids[idx] if idx < len(track_ids) else None
             current = best_by_lane.get(lane)
             if current is None or (score, area) > (current["score"], current["area"]):
                 best_by_lane[lane] = {
                     "bbox": [float(x1), float(y1), float(x2), float(y2)],
                     "score": score,
                     "area": area,
+                    "track_id": int(track_id) if track_id is not None else None,
+                    "center": [center_x, center_y],
                 }
 
         candidates: List[Dict] = []
@@ -259,8 +274,33 @@ class AlgorithmRunner:
             crop = frame[yi1:yi2, xi1:xi2]
             if crop.size == 0:
                 continue
-            candidates.append({"lane": lane, "image": crop, "bbox": bbox})
+            binding_key = self._face_candidate_key(
+                lane=lane,
+                track_id=current.get("track_id"),
+                center=current.get("center"),
+            )
+            candidates.append(
+                {
+                    "lane": lane,
+                    "image": crop,
+                    "bbox": current["bbox"],
+                    "track_id": current.get("track_id"),
+                    "binding_key": binding_key,
+                }
+            )
         return candidates
+
+    @staticmethod
+    def _face_candidate_key(
+        lane: int, track_id: int | None, center: List[float] | None
+    ) -> str:
+        if track_id is not None:
+            return f"track:{int(track_id)}"
+        if isinstance(center, list) and len(center) >= 2:
+            cx = int(round(float(center[0]) / 80.0))
+            cy = int(round(float(center[1]) / 80.0))
+            return f"lane:{lane}:cell:{cx}:{cy}"
+        return f"lane:{lane}"
 
     def _extract_tracker_inputs(self, tracker_result) -> tuple[List[Dict], List[int], List]:
         if tracker_result is None:
