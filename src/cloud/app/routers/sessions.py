@@ -266,6 +266,8 @@ async def get_session_diagnostics(
         last_status = row.get("last_status")
         status_data = (last_status or {}).get("data", {})
         lane_layout_status = status_data.get("lane_layout_status") if isinstance(status_data, dict) else None
+        start_line_status = status_data.get("start_line_status") if isinstance(status_data, dict) else None
+        finish_line_status = status_data.get("finish_line_status") if isinstance(status_data, dict) else None
         if isinstance(lane_layout_status, dict) and lane_layout_status.get("warning"):
             warnings.append(
                 {
@@ -277,12 +279,36 @@ async def get_session_diagnostics(
                     "file": lane_layout_status.get("file"),
                 }
             )
+        if isinstance(start_line_status, dict) and start_line_status.get("warning"):
+            warnings.append(
+                {
+                    "node_id": node_id,
+                    "node_role": row.get("node_role"),
+                    "type": "START_LINE",
+                    "message": start_line_status.get("warning"),
+                    "source": start_line_status.get("source"),
+                    "file": start_line_status.get("file"),
+                }
+            )
+        if isinstance(finish_line_status, dict) and finish_line_status.get("warning"):
+            warnings.append(
+                {
+                    "node_id": node_id,
+                    "node_role": row.get("node_role"),
+                    "type": "FINISH_LINE",
+                    "message": finish_line_status.get("warning"),
+                    "source": finish_line_status.get("source"),
+                    "file": finish_line_status.get("file"),
+                }
+            )
         required_nodes.append(
             {
                 "node_id": node_id,
                 "node_role": row.get("node_role"),
                 "online": bool(row.get("online")),
                 "last_status": last_status,
+                "start_line_status": start_line_status,
+                "finish_line_status": finish_line_status,
                 "last_ack": row.get("last_ack"),
                 "last_id_report": row.get("last_id_report"),
                 "last_violation": row.get("last_violation"),
