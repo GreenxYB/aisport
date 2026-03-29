@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     display_start_line: bool = Field(
         True, description="Draw start line on preview/snapshot for debugging"
     )
+    display_finish_line: bool = Field(
+        True, description="Draw finish line on preview/snapshot for debugging"
+    )
     display_lane_guides: bool = Field(
         True, description="Draw lane guide overlays on preview/snapshot for debugging"
     )
@@ -84,6 +87,12 @@ class Settings(BaseSettings):
     yolo_imgsz: int = Field(640, description="YOLO inference image size")
     start_line_y: int = Field(480, description="Start line Y for false start (based on 640px height)")
     finish_line_y: int = Field(520, description="Finish line Y (based on 640px height)")
+    start_line_file: str = Field(
+        "", description="Optional JSON calibration file for start line; preferred over START_LINE_Y"
+    )
+    finish_line_file: str = Field(
+        "", description="Optional JSON calibration file for finish line; preferred over FINISH_LINE_Y"
+    )
     lane_x_ranges: str = Field(
         "",
         description="Optional lane x ranges like '1:0-160,2:160-320' in preview-space pixels",

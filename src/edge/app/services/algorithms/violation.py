@@ -7,7 +7,8 @@ import numpy as np
 from ...core.config import get_settings
 from ...core.state import NodeState
 from .lane_layout import binding_target_lanes, resolve_lane_by_point
-from .rules import toe_proxy_points_from_keypoints
+from .race_line import inspect_line_definition, line_y_at_x, load_line_definition, point_crossed_line
+from .rules import ankle_points_from_keypoints, toe_proxy_points_from_keypoints
 
 logger = logging.getLogger("edge.yolo")
 
@@ -220,12 +221,16 @@ class ViolationAlgo:
                 return int(class_id)
         return 0
 
-    def _scaled_start_line_y(self, frame: np.ndarray) -> int:
-        line_y = int(self.settings.start_line_y)
-        if frame is None or frame.shape[0] == 0:
-            return line_y
-        # start_line_y is defined on a 640px-tall frame
-        return int(line_y * frame.shape[0] / 640)
+    def _start_line(self, frame: np.ndarray) -> Dict[str, Any]:
+        frame_h = int(frame.shape[0]) if frame is not None and frame.size > 0 else 640
+        frame_w = int(frame.shape[1]) if frame is not None and frame.size > 0 else 1280
+        return load_line_definition(
+            frame_width=frame_w,
+            frame_height=frame_h,
+            line_file=self.settings.start_line_file,
+            fallback_y=int(self.settings.start_line_y),
+            line_name="start_line",
+        )
 
     def _toe_proxy_points(self, keypoints: Any) -> List[Dict[str, Any]]:
         return toe_proxy_points_from_keypoints(
@@ -234,13 +239,22 @@ class ViolationAlgo:
             toe_scale=self.settings.toe_proxy_scale,
         )
 
-    def _foot_crossed_line(self, keypoints: Any, line_y: int) -> tuple[bool, List[Dict[str, Any]]]:
+    def _ankle_points(self, keypoints: Any) -> List[Dict[str, Any]]:
+        return ankle_points_from_keypoints(
+            keypoints=keypoints,
+            conf_thres=self.settings.kps_conf_thres,
+        )
+
+    def _foot_crossed_line(
+        self, keypoints: Any, line: Dict[str, Any]
+    ) -> tuple[bool, List[Dict[str, Any]], List[Dict[str, Any]]]:
+        ankle_points = self._ankle_points(keypoints)
         toe_points = self._toe_proxy_points(keypoints)
-        for point in toe_points:
-            toe = point.get("toe")
-            if isinstance(toe, list) and len(toe) >= 2 and toe[1] >= line_y:
-                return True, toe_points
-        return False, toe_points
+        for point in ankle_points:
+            ankle = point.get("ankle")
+            if point_crossed_line(ankle, line):
+                return True, ankle_points, toe_points
+        return False, ankle_points, toe_points
 
     def process_frame_logic(
         self,
@@ -256,18 +270,20 @@ class ViolationAlgo:
         expected_start = self.state.expected_start_time
         if expected_start is not None and current_time < int(expected_start):
             if self.state.config.get("false_start_check", True):
-                line_y = self._scaled_start_line_y(frame)
+                line = self._start_line(frame)
+                line_y = int(max(line["p1"][1], line["p2"][1]))
                 debug_items: List[Dict[str, Any]] = []
                 for idx, item in enumerate(boxes):
                     track_id = track_ids[idx] if idx < len(track_ids) else None
                     lane = self._resolve_lane(track_id, idx, item, frame.shape[1] if frame is not None else 0)
                     kps_item = kps[idx] if idx < len(kps) else None
-                    crossed, toe_points = self._foot_crossed_line(kps_item, line_y)
+                    crossed, ankle_points, toe_points = self._foot_crossed_line(kps_item, line)
                     debug_items.append(
                         {
                             "lane": lane,
                             "track_id": track_id,
                             "bbox": self._extract_box(item),
+                            "ankle_points": ankle_points,
                             "toe_proxy_points": toe_points,
                             "crossed": crossed,
                         }
@@ -296,9 +312,11 @@ class ViolationAlgo:
                                     "score": self._extract_score(item),
                                     "bbox": self._extract_box(item),
                                     "keypoints": kps_item,
+                                    "ankle_points": ankle_points,
                                     "toe_proxy_points": toe_points,
                                     "evidence_frame": None,
                                     "start_line_y": line_y,
+                                    "start_line": line,
                                 }
                             ],
                         }
@@ -306,6 +324,14 @@ class ViolationAlgo:
                     self._false_start_reported.add(lane)
                 self.state.last_toe_proxy_debug = {
                     "start_line_y": line_y,
+                    "start_line": line,
+                    "start_line_status": inspect_line_definition(
+                        frame_width=int(frame.shape[1]) if frame is not None else 1280,
+                        frame_height=int(frame.shape[0]) if frame is not None else 640,
+                        line_file=self.settings.start_line_file,
+                        fallback_y=int(self.settings.start_line_y),
+                        line_name="start_line",
+                    ),
                     "items": debug_items,
                 }
                 self.state.last_toe_proxy_ts = current_time

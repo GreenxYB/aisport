@@ -1,6 +1,31 @@
 from typing import Any, Dict, List, Optional
 
 
+def ankle_points_from_keypoints(
+    keypoints: Any,
+    conf_thres: float,
+) -> List[Dict[str, Any]]:
+    if not keypoints or len(keypoints) < 17:
+        return []
+
+    points: List[Dict[str, Any]] = []
+    joints = ((15, "left"), (16, "right"))
+    for ankle_idx, side in joints:
+        try:
+            ankle_x, ankle_y, ankle_s = keypoints[ankle_idx]
+        except Exception:
+            continue
+        if ankle_s is None or ankle_s < conf_thres:
+            continue
+        points.append(
+            {
+                "side": side,
+                "ankle": [float(ankle_x), float(ankle_y)],
+            }
+        )
+    return points
+
+
 def toe_proxy_points_from_keypoints(
     keypoints: Any,
     conf_thres: float,
@@ -64,6 +89,24 @@ def max_measure_y_for_finish(
     if isinstance(bbox, list) and len(bbox) >= 4:
         return float(bbox[3])
     return None
+
+
+def max_ankle_measure_delta_for_finish(
+    keypoints: Any,
+    conf_thres: float,
+    line_y_at_x,
+) -> Optional[float]:
+    ankle_points = ankle_points_from_keypoints(keypoints, conf_thres)
+    if not ankle_points:
+        return None
+    deltas = []
+    for point in ankle_points:
+        ankle = point.get("ankle")
+        if isinstance(ankle, list) and len(ankle) >= 2:
+            deltas.append(float(ankle[1]) - float(line_y_at_x(float(ankle[0]))))
+    if not deltas:
+        return None
+    return max(deltas)
 
 
 class FinishLineJudge:

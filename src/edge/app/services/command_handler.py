@@ -10,6 +10,7 @@ from common.protocol import CommandPayload, NodeStatusReport
 from ..core.config import get_settings
 from ..core.state import NodePhase, NodeState
 from .algorithms.lane_layout import binding_target_lanes, inspect_lane_layout
+from .algorithms.race_line import inspect_line_definition
 from .event_simulator import EventSimulator
 from .algorithms import AlgorithmRunner
 from .publisher import NullPublisher
@@ -484,6 +485,20 @@ class CommandHandler:
             lane_polygons_text=self.settings.lane_polygons,
             lane_layout_file=self.settings.lane_layout_file,
         )
+        start_line_status = inspect_line_definition(
+            frame_width=int(self.settings.capture_width),
+            frame_height=int(self.settings.capture_height),
+            line_file=self.settings.start_line_file,
+            fallback_y=int(self.settings.start_line_y),
+            line_name="start_line",
+        )
+        finish_line_status = inspect_line_definition(
+            frame_width=int(self.settings.capture_width),
+            frame_height=int(self.settings.capture_height),
+            line_file=self.settings.finish_line_file,
+            fallback_y=int(self.settings.finish_line_y),
+            line_name="finish_line",
+        )
 
         return NodeStatusReport(
             node_id=self.state.node_id,
@@ -513,6 +528,8 @@ class CommandHandler:
                 "binding_confirmed_at_ms": self.state.binding_confirmed_at_ms,
                 "last_face_ts": self.state.last_face_ts,
                 "lane_layout_status": lane_layout_status,
+                "start_line_status": start_line_status,
+                "finish_line_status": finish_line_status,
                 "lane_layout_debug": self.state.lane_layout_debug,
                 "last_lane_observation_ts": self.state.last_lane_observation_ts,
                 "camera_ready": self.state.capture_running and not self.state.capture_error,

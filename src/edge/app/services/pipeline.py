@@ -16,6 +16,7 @@ from ultralytics.utils.checks import check_yaml
 from ..core.config import get_settings
 from .algorithms.violation import extract_ultralytics_dets
 from .algorithms.lane_layout import available_lane_targets, build_lane_shapes
+from .algorithms.race_line import load_line_definition
 
 # 获取 logger 实例
 logger = logging.getLogger("edge.pipeline")
@@ -520,6 +521,40 @@ class EdgePipeline:
             )
         return annotated
 
+    def _overlay_race_lines(self, frame: np.ndarray) -> np.ndarray:
+        if frame is None or frame.size == 0:
+            return frame
+        annotated = frame.copy()
+        role = str(self.settings.node_role or "").upper()
+
+        if self.settings.display_start_line and role in {"START", "ALL_IN_ONE"}:
+            start_line = load_line_definition(
+                frame_width=annotated.shape[1],
+                frame_height=annotated.shape[0],
+                line_file=self.settings.start_line_file,
+                fallback_y=int(self.settings.start_line_y),
+                line_name="start_line",
+            )
+            p1 = tuple(int(v) for v in start_line["p1"])
+            p2 = tuple(int(v) for v in start_line["p2"])
+            cv2.line(annotated, p1, p2, (0, 0, 255), 2)
+            cv2.putText(annotated, "START", (p1[0] + 8, max(24, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        if self.settings.display_finish_line and role in {"FINISH", "ALL_IN_ONE"}:
+            finish_line = load_line_definition(
+                frame_width=annotated.shape[1],
+                frame_height=annotated.shape[0],
+                line_file=self.settings.finish_line_file,
+                fallback_y=int(self.settings.finish_line_y),
+                line_name="finish_line",
+            )
+            p1 = tuple(int(v) for v in finish_line["p1"])
+            p2 = tuple(int(v) for v in finish_line["p2"])
+            cv2.line(annotated, p1, p2, (255, 0, 255), 2)
+            cv2.putText(annotated, "FINISH", (p1[0] + 8, max(24, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+        return annotated
+
     def start(self):
         """启动流水线所有线程"""
         if self.running:
@@ -988,6 +1023,7 @@ class EdgePipeline:
             try:
                 annotated_frame = tracker_result.draw()
                 annotated_frame = self._overlay_lane_guides(annotated_frame)
+                annotated_frame = self._overlay_race_lines(annotated_frame)
                 cv2.putText(
                     annotated_frame,
                     f"FPS: {fps:.1f}",
