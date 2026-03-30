@@ -14,6 +14,7 @@ logger = logging.getLogger("edge.yolo")
 
 
 def extract_ultralytics_dets(result) -> List[Dict]:
+    """将 Ultralytics 结果标准化为统一检测结构。"""
     if result is None:
         return []
     if result.boxes is None or len(result.boxes) == 0:
@@ -40,6 +41,12 @@ def extract_ultralytics_dets(result) -> List[Dict]:
 
 
 class ViolationAlgo:
+    """违规检测算法。
+
+    - 起跑前：检测 FALSE_START（通过踝点/脚尖代理与起跑线关系）
+    - 监控中：按配置节流输出 LANE_DEVIATION 示例事件
+    """
+
     def __init__(self, state: NodeState, load_model: bool = True):
         self.settings = get_settings()
         self.state = state
@@ -56,6 +63,7 @@ class ViolationAlgo:
             self._load_model()
 
     def _load_model(self) -> None:
+        """按配置加载 TRT 或 Ultralytics 模型。"""
         engine_path = Path(self.settings.yolo_engine_path)
         names_path = Path(self.settings.yolo_names_path)
         pt_path = Path(self.settings.yolo_pt_path)
@@ -121,6 +129,7 @@ class ViolationAlgo:
             self.model = None
 
     def process(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
+        """兼容入口：直接做模型推理并进入违规逻辑。"""
         self._sync_session()
         if not self.model:
             self.last_dets = []
@@ -162,12 +171,14 @@ class ViolationAlgo:
         return extract_ultralytics_dets(results[0])
 
     def _sync_session(self) -> None:
+        """会话切换时重置会话级判定缓存。"""
         if self.state.session_id != self._session_id:
             self._session_id = self.state.session_id
             self._false_start_reported.clear()
             self._last_violation_ms = None
 
     def _resolve_lane(self, track_id: Optional[int], idx: int, item: Any, frame_width: int) -> int:
+        """推断目标赛道（几何优先，绑定兜底，索引再兜底）。"""
         bbox = self._extract_box(item)
         if isinstance(bbox, list) and len(bbox) >= 4 and frame_width > 0 and getattr(self, "_frame_height", 0) > 0:
             center_x = float(bbox[0] + bbox[2]) / 2.0
@@ -222,6 +233,7 @@ class ViolationAlgo:
         return 0
 
     def _start_line(self, frame: np.ndarray) -> Dict[str, Any]:
+        """加载当前分辨率下的起跑线定义。"""
         frame_h = int(frame.shape[0]) if frame is not None and frame.size > 0 else 640
         frame_w = int(frame.shape[1]) if frame is not None and frame.size > 0 else 1280
         return load_line_definition(
@@ -248,6 +260,7 @@ class ViolationAlgo:
     def _foot_crossed_line(
         self, keypoints: Any, line: Dict[str, Any]
     ) -> tuple[bool, List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """判断脚部关键点是否越过起跑线。"""
         ankle_points = self._ankle_points(keypoints)
         toe_points = self._toe_proxy_points(keypoints)
         for point in ankle_points:
@@ -264,12 +277,18 @@ class ViolationAlgo:
         kps: List,
         current_time: int,
     ) -> List[Dict]:
+        """违规主逻辑。
+
+        1) expected_start_time 前，仅做 FALSE_START 检测
+        2) expected_start_time 后，按节流输出运行中违规事件
+        """
         events: List[Dict] = []
         self._frame_height = int(frame.shape[0]) if frame is not None else 0
 
         expected_start = self.state.expected_start_time
         if expected_start is not None and current_time < int(expected_start):
             if self.state.config.get("false_start_check", True):
+                # 起跑前：只关心是否越线，且同赛道仅上报一次 FALSE_START。
                 line = self._start_line(frame)
                 line_y = int(max(line["p1"][1], line["p2"][1]))
                 debug_items: List[Dict[str, Any]] = []
@@ -343,6 +362,7 @@ class ViolationAlgo:
         if not self.state.config.get("tracking_active", True):
             return events
 
+        # 运行中违规上报节流，避免高频重复事件刷屏。
         interval_ms = int(max(self.settings.event_interval_sec, 0.5) * 1000)
         if self._last_violation_ms is not None and current_time - self._last_violation_ms < interval_ms:
             return events

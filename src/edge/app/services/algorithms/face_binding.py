@@ -17,6 +17,11 @@ logger = logging.getLogger("edge.face")
 
 
 class FaceBindingAlgo:
+    """人脸绑定算法封装。
+
+    基于百度人脸检索接口，将候选目标映射到学员身份，输出 ID_REPORT。
+    """
+
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = None
@@ -33,16 +38,19 @@ class FaceBindingAlgo:
             logger.warning("baidu-aip not installed; face binding disabled")
 
     def reset(self, session_id: str | None = None) -> None:
+        """重置会话级缓存（尝试次数/已确认目标）。"""
         self._attempts_by_key.clear()
         self._confirmed_keys.clear()
         self._session_id = session_id
 
     def bind_session(self, session_id: str | None) -> None:
+        """会话切换时自动清理历史识别状态。"""
         normalized = session_id or None
         if normalized != self._session_id:
             self.reset(normalized)
 
     def process(self, frame: np.ndarray, ts_ms: float) -> List[Dict]:
+        """兼容旧接口：对整帧做人脸检索并输出 ID_REPORT。"""
         if not self.client:
             return []
         face_base64 = self._frame_to_base64(frame)
@@ -59,14 +67,17 @@ class FaceBindingAlgo:
         return [event]
 
     def process_candidates(self, candidates: List[Dict], ts_ms: float) -> List[Dict]:
+        """对赛道候选目标逐个做人脸检索，并生成聚合 ID_REPORT。"""
         if not self.client:
             return []
         results: List[Dict] = []
         for candidate in candidates:
             binding_key = str(candidate.get("binding_key") or "")
+            # 已确认目标不再重复识别，避免冗余请求。
             if binding_key and binding_key in self._confirmed_keys:
                 continue
             attempts = self._attempts_by_key.get(binding_key, 0) if binding_key else 0
+            # 单目标最多尝试 N 次，控制外部 API 调用量。
             if binding_key and attempts >= max(1, int(self.settings.face_search_max_attempts)):
                 continue
             lane = candidate.get("lane")
@@ -97,6 +108,7 @@ class FaceBindingAlgo:
         return [{"msg_type": "ID_REPORT", "timestamp": int(ts_ms), "data": results}]
 
     def _frame_to_base64(self, frame: np.ndarray) -> str:
+        """将 BGR 图像编码为百度接口所需 BASE64 JPEG。"""
         try:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             ok, buffer = cv2.imencode(".jpg", rgb)
@@ -108,6 +120,7 @@ class FaceBindingAlgo:
             return ""
 
     def search_face_baidu(self, face_base64: str, group_id: str = "default") -> List[Dict]:
+        """调用百度人脸检索并标准化返回字段。"""
         try:
             res_list: List[Dict] = []
             res = self.client.search(face_base64, "BASE64", group_id)

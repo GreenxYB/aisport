@@ -5,6 +5,7 @@ def ankle_points_from_keypoints(
     keypoints: Any,
     conf_thres: float,
 ) -> List[Dict[str, Any]]:
+    """提取左右踝关键点（COCO 15/16）。"""
     if not keypoints or len(keypoints) < 17:
         return []
 
@@ -31,6 +32,10 @@ def toe_proxy_points_from_keypoints(
     conf_thres: float,
     toe_scale: float,
 ) -> List[Dict[str, Any]]:
+    """生成脚尖代理点。
+
+    优先使用膝-踝向量外推；不可用时回退到踝点本身。
+    """
     if not keypoints or len(keypoints) < 17:
         return []
 
@@ -77,6 +82,7 @@ def max_measure_y_for_finish(
     conf_thres: float,
     toe_scale: float,
 ) -> Optional[float]:
+    """计算用于终点判定的 y 测量值（优先脚尖代理，兜底 bbox 底边）。"""
     toe_points = toe_proxy_points_from_keypoints(keypoints, conf_thres, toe_scale)
     if toe_points:
         y_list = []
@@ -96,6 +102,7 @@ def max_ankle_measure_delta_for_finish(
     conf_thres: float,
     line_y_at_x,
 ) -> Optional[float]:
+    """计算踝点相对终点线的最大垂直差值。"""
     ankle_points = ankle_points_from_keypoints(keypoints, conf_thres)
     if not ankle_points:
         return None
@@ -110,6 +117,12 @@ def max_ankle_measure_delta_for_finish(
 
 
 class FinishLineJudge:
+    """终点过线判定器。
+
+    通过连续两帧测量值（prev_y -> measure_y）判断是否发生跨线，
+    并为首次跨线目标分配名次。
+    """
+
     def __init__(self) -> None:
         self._last_y_by_track: dict[int, float] = {}
         self._finished: dict[int, Dict[str, Any]] = {}
@@ -132,6 +145,7 @@ class FinishLineJudge:
         current_time: int,
         enabled: bool,
     ) -> Optional[Dict[str, Any]]:
+        """更新单个 track 的状态并在跨线时返回事件。"""
         if measure_y is None:
             return None
 

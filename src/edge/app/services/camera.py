@@ -20,6 +20,15 @@ FrameCallback = Callable[[np.ndarray, float], None]  # frame, ts_ms
 
 
 class CameraSource:
+    """底层视频源封装。
+
+    支持：
+    - 真实摄像头 / RTSP
+    - 本地单视频文件
+    - 目录轮播视频（便于离线回放调试）
+    - 模拟帧模式
+    """
+
     def __init__(self):
         self.settings = get_settings()
         self.log = logging.getLogger("edge.camera")
@@ -30,6 +39,7 @@ class CameraSource:
         self._video_dir_mode = False
 
     def open(self) -> None:
+        """打开视频源并设置采集参数。"""
         if self.simulate:
             self.log.info("Camera in simulate mode; no physical device needed")
             return
@@ -92,6 +102,7 @@ class CameraSource:
         return ok, frame if ok else None, ts_ms if ok else None
 
     def close(self) -> None:
+        """释放视频句柄。"""
         if self.cap:
             self.cap.release()
             self.cap = None
@@ -99,6 +110,15 @@ class CameraSource:
 
 
 class CaptureManager:
+    """采集管理器。
+
+    负责：
+    1) 驱动 CameraSource 循环采集
+    2) 叠加调试可视化（赛道线、抢跑点）
+    3) 维护 JPEG 预览缓存
+    4) 将帧回调给上层算法/流水线
+    """
+
     def __init__(self, on_frame: FrameCallback, state: Optional[NodeState] = None):
         self.settings = get_settings()
         self.on_frame = on_frame
@@ -131,6 +151,7 @@ class CaptureManager:
             return default
 
     def _build_style(self) -> dict:
+        """构建可视化样式配置（颜色、线宽、字号）。"""
         return {
             "line_color": self._parse_bgr(self.settings.viz_line_color, (0, 0, 255)),
             "ready_color": self._parse_bgr(self.settings.viz_ready_color, (0, 255, 0)),
@@ -148,6 +169,7 @@ class CaptureManager:
         }
 
     def start(self, raise_on_fail: bool = False) -> bool:
+        """启动采集线程；失败时可按参数选择是否抛异常。"""
         if self._running.is_set():
             return True
         try:
@@ -164,6 +186,7 @@ class CaptureManager:
         return True
 
     def stop(self) -> None:
+        """停止采集线程并释放相机资源。"""
         if not self._running.is_set():
             return
         self._running.clear()
@@ -173,6 +196,7 @@ class CaptureManager:
         self.log.info("Capture loop stopped")
 
     def _loop(self) -> None:
+        """采集主循环：读帧 -> 叠加 -> 编码缓存 -> 回调。"""
         interval = 1.0 / max(self.settings.capture_fps, 1)
         while self._running.is_set():
             ok, frame, ts_ms = self.camera.read_ts()
@@ -222,6 +246,7 @@ class CaptureManager:
         return self._last_ts
 
     def snapshot_jpeg(self) -> Optional[bytes]:
+        """获取最近一帧 JPEG；必要时按需实时编码。"""
         with self._lock:
             if self._last_jpeg:
                 return self._last_jpeg
@@ -249,11 +274,13 @@ class CaptureManager:
         return None
 
     def last_encode_error(self) -> Optional[str]:
+        """返回最近一次 JPEG 编码错误。"""
         with self._lock:
             return self._last_encode_error
 
     # ---- local display (debug only) ----
     def start_display(self) -> None:
+        """启动本地预览线程（仅调试环境建议开启）。"""
         if self._display_thread and self._display_thread.is_alive():
             return
         if not self.settings.display_preview:
@@ -263,6 +290,7 @@ class CaptureManager:
         self.log.info("Display thread started (cv2.imshow)")
 
     def _display_loop(self) -> None:
+        """本地调试显示循环（cv2.imshow）。"""
         try:
             while self._running.is_set():
                 frame = None
@@ -288,6 +316,7 @@ class CaptureManager:
                 pass
 
     def _overlay_false_start(self, preview: np.ndarray) -> None:
+        """在预览帧上叠加抢跑诊断信息与告警框。"""
         if not self.state:
             return
         debug_payload = self.state.last_toe_proxy_debug
@@ -415,6 +444,7 @@ class CaptureManager:
         )
 
     def _overlay_lane_guides(self, preview: np.ndarray) -> None:
+        """在预览帧上绘制赛道边界与 lane 标签。"""
         if not self.settings.display_lane_guides or preview is None or preview.size == 0:
             return
         lane_count = int(self.state.config.get("lane_count", 0) or 0) if self.state else 0

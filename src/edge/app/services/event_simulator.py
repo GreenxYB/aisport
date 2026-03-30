@@ -1,4 +1,5 @@
 import json
+import logging
 import queue
 import random
 import threading
@@ -12,38 +13,62 @@ from ..core.state import NodeState
 
 
 class EventSimulator:
+    """本地事件模拟器。
+
+    用于联调阶段在无真实算法输出时，持续生成违规/冲线事件，
+    并复用真实上报链路（publisher 或 HTTP 上报）。
+    """
+
     def __init__(self, state: NodeState, publisher: Any = None):
         self.settings = get_settings()
         self.state = state
         self.publisher = publisher
+        self.logger = logging.getLogger("edge.event_sim")
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._log_path = Path(__file__).resolve().parents[4] / "logs" / "events.jsonl"
-        self._fail_path = Path(__file__).resolve().parents[4] / "logs" / "events_failed.jsonl"
+        self._fail_path = (
+            Path(__file__).resolve().parents[4] / "logs" / "events_failed.jsonl"
+        )
         self._retry_queue: "queue.Queue[dict]" = queue.Queue()
         self._retry_thread: Optional[threading.Thread] = None
         self._retry_running = threading.Event()
+        self._last_report_fail_log_ts: float = 0.0
+        self._report_fail_count = 0
 
     def start(self, session_id: str, lane_count: int) -> None:
+        """启动模拟主循环与可选重试线程。"""
         if self._running.is_set():
             return
         self._running.set()
+        self.logger.info(
+            "event simulator started session=%s lane_count=%s interval=%.2fs",
+            session_id,
+            lane_count,
+            self.settings.event_interval_sec,
+        )
         self._thread = threading.Thread(
-            target=self._loop, args=(session_id, lane_count), daemon=True, name="event-sim"
+            target=self._loop,
+            args=(session_id, lane_count),
+            daemon=True,
+            name="event-sim",
         )
         self._thread.start()
         if self.settings.report_enabled and self.settings.report_retry_enabled:
             self._start_retry_worker()
 
     def stop(self) -> None:
+        """停止模拟与重试线程。"""
         if not self._running.is_set():
             return
         self._running.clear()
         if self._thread:
             self._thread.join(timeout=2)
         self._stop_retry_worker()
+        self.logger.info("event simulator stopped")
 
     def _loop(self, session_id: str, lane_count: int) -> None:
+        """周期生成事件并尝试上报。"""
         interval = max(self.settings.event_interval_sec, 0.5)
         finish_interval = max(self.settings.finish_interval_sec, 1.0)
         next_finish = time.time() + finish_interval
@@ -88,11 +113,13 @@ class EventSimulator:
             time.sleep(interval)
 
     def _append(self, event: dict) -> None:
+        """追加写入本地 jsonl，便于离线回放和问题复盘。"""
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         with self._log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _report(self, event: dict) -> None:
+        """优先走 publisher；不可用时按配置走 HTTP 上报。"""
         if self.publisher:
             try:
                 ok = self.publisher.publish(event)
@@ -108,11 +135,23 @@ class EventSimulator:
             self.state.reports_sent += 1
             return
         self.state.reports_failed += 1
+        self._report_fail_count += 1
+        now = time.time()
+        if now - self._last_report_fail_log_ts >= 5:
+            self._last_report_fail_log_ts = now
+            self.logger.warning(
+                "event report failed msg_type=%s fail_count=%s retry_enabled=%s",
+                event.get("msg_type"),
+                self._report_fail_count,
+                self.settings.report_retry_enabled,
+            )
         if self.settings.report_retry_enabled:
+            # 失败后入队，由重试线程统一处理。
             self._retry_queue.put({"event": event, "attempt": 1})
         self._append_failed(event, Exception("report_failed"))
 
     def _send(self, event: dict) -> bool:
+        """将事件投递到 Cloud 报告接口。"""
         msg_type = event.get("msg_type")
         if msg_type == "VIOLATION_EVENT":
             endpoint = "violation"
@@ -126,35 +165,47 @@ class EventSimulator:
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.settings.report_timeout_sec) as resp:
+            with urllib.request.urlopen(
+                req, timeout=self.settings.report_timeout_sec
+            ) as resp:
                 _ = resp.read()
             return True
         except Exception:
             return False
 
     def _append_failed(self, event: dict, exc: Exception) -> None:
+        """记录失败事件与错误原因，便于定位网络或协议问题。"""
         self._fail_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"event": event, "error": str(exc), "ts_ms": int(time.time() * 1000)}
         with self._fail_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _start_retry_worker(self) -> None:
+        """启动失败重试线程。"""
         if self._retry_running.is_set():
             return
         self._retry_running.set()
+        self.logger.info(
+            "event retry worker started interval=%.2fs max_attempts=%s",
+            self.settings.report_retry_interval_sec,
+            self.settings.report_retry_max,
+        )
         self._retry_thread = threading.Thread(
             target=self._retry_loop, daemon=True, name="event-retry"
         )
         self._retry_thread.start()
 
     def _stop_retry_worker(self) -> None:
+        """停止失败重试线程。"""
         if not self._retry_running.is_set():
             return
         self._retry_running.clear()
         if self._retry_thread:
             self._retry_thread.join(timeout=2)
+        self.logger.info("event retry worker stopped")
 
     def _retry_loop(self) -> None:
+        """失败重试主循环：指数策略暂未启用，当前为固定间隔重试。"""
         interval = max(self.settings.report_retry_interval_sec, 1.0)
         while self._retry_running.is_set():
             try:
@@ -173,4 +224,9 @@ class EventSimulator:
                 self._retry_queue.put(item)
             else:
                 self.state.reports_failed += 1
+                self.logger.error(
+                    "event retry exhausted msg_type=%s attempts=%s",
+                    event.get("msg_type") if isinstance(event, dict) else None,
+                    attempt,
+                )
                 self._append_failed(event, Exception("retry_exhausted"))

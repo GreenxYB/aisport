@@ -10,6 +10,11 @@ from .rules import FinishLineJudge, ankle_points_from_keypoints, max_ankle_measu
 
 
 class FinishLineAlgo:
+    """终点线判定算法。
+
+    输入跟踪框/关键点，按赛道输出 FINISH_REPORT（含 rank 与 finish_ts）。
+    """
+
     def __init__(self, state: NodeState) -> None:
         self.settings = get_settings()
         self.state = state
@@ -17,11 +22,13 @@ class FinishLineAlgo:
         self._judge = FinishLineJudge()
 
     def _sync_session(self) -> None:
+        """会话切换时重置判定器，避免跨场次串状态。"""
         if self.state.session_id != self._session_id:
             self._session_id = self.state.session_id
             self._judge.reset()
 
     def _finish_line(self, frame_shape: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
+        """加载终点线定义（优先校准文件，兜底 fallback_y）。"""
         frame_h = frame_shape[0] if frame_shape else 640
         frame_w = frame_shape[1] if frame_shape else 1280
         return load_line_definition(
@@ -40,6 +47,7 @@ class FinishLineAlgo:
         frame_width: int,
         frame_height: int,
     ) -> int:
+        """确定目标赛道：优先几何映射，其次绑定配置，最后按索引兜底。"""
         if isinstance(bbox, list) and len(bbox) >= 4 and frame_width > 0 and frame_height > 0:
             center_x = float(bbox[0] + bbox[2]) / 2.0
             center_y = float(bbox[1] + bbox[3]) / 2.0
@@ -72,12 +80,14 @@ class FinishLineAlgo:
         frame_shape: Optional[Tuple[int, int]] = None,
         line_y_override: Optional[int] = None,
     ) -> Optional[Dict]:
+        """处理当前帧检测结果并尝试生成冲线事件。"""
         self._sync_session()
         if self.state.phase != NodePhase.MONITORING:
             return None
 
         current_time = int(ts_ms)
         expected_start = self.state.expected_start_time
+        # 统一起跑时间之前，不做终点判定。
         if expected_start is not None and current_time < int(expected_start):
             return None
 
@@ -110,6 +120,7 @@ class FinishLineAlgo:
                 line_y_at_x=lambda x: line_y_at_x(line, x),
             )
             if measure_delta is None and isinstance(bbox, list) and len(bbox) >= 4:
+                # 关键点不可用时，回退到 bbox 底边近似。
                 center_x = float(bbox[0] + bbox[2]) / 2.0
                 measure_delta = float(bbox[3]) - float(line_y_at_x(line, center_x))
             finish_ev = self._judge.update(
