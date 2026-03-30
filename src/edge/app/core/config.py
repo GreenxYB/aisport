@@ -10,9 +10,13 @@ class Settings(BaseSettings):
     node_id: int = Field(1, description="Edge node numeric ID")
     command_poll_interval_ms: int = 500
     cloud_api_base: str = Field("http://localhost:8000", description="Cloud endpoint")
-    cloud_ws_url: str = Field("ws://localhost:8000/nodes/ws", description="Cloud websocket endpoint")
+    cloud_ws_url: str = Field(
+        "ws://localhost:8000/nodes/ws", description="Cloud websocket endpoint"
+    )
     camera_device: str = Field("0", description="Camera device index/path or RTSP URL")
-    rtsp_url: str = Field("", description="Optional RTSP URL; overrides camera_device when set")
+    rtsp_url: str = Field(
+        "", description="Optional RTSP URL; overrides camera_device when set"
+    )
     simulate_camera: bool = Field(
         True,
         description="Use synthetic frames when no real camera is available; set false to use real device",
@@ -20,12 +24,22 @@ class Settings(BaseSettings):
     auto_start_capture: bool = Field(
         True, description="Start camera capture on service startup"
     )
-    ws_enabled: bool = Field(False, description="Enable persistent websocket link to cloud")
-    node_role: str = Field("START", description="Node role: START/FINISH/MID/ALL_IN_ONE")
+    ws_enabled: bool = Field(
+        False, description="Enable persistent websocket link to cloud"
+    )
+    node_role: str = Field(
+        "START", description="Node role: START/FINISH/MID/ALL_IN_ONE"
+    )
     site_id: str = Field("local-dev", description="Logical site identifier")
-    node_capabilities: str = Field("camera,speaker", description="Comma separated capability list")
-    ws_reconnect_interval_sec: float = Field(3.0, description="Websocket reconnect interval seconds")
-    ws_status_interval_sec: float = Field(2.0, description="Periodic status report interval seconds")
+    node_capabilities: str = Field(
+        "camera,speaker", description="Comma separated capability list"
+    )
+    ws_reconnect_interval_sec: float = Field(
+        3.0, description="Websocket reconnect interval seconds"
+    )
+    ws_status_interval_sec: float = Field(
+        2.0, description="Periodic status report interval seconds"
+    )
     display_preview: bool = Field(
         True,
         description="Show cv2.imshow live preview by default (requires GUI session)",
@@ -49,11 +63,15 @@ class Settings(BaseSettings):
     simulate_events: bool = Field(
         False, description="Generate simulated events during monitoring"
     )
-    event_interval_sec: float = Field(2.0, description="Simulated event interval seconds")
+    event_interval_sec: float = Field(
+        2.0, description="Simulated event interval seconds"
+    )
     simulate_finish_reports: bool = Field(
         False, description="Generate simulated finish reports during monitoring"
     )
-    finish_interval_sec: float = Field(8.0, description="Simulated finish report interval seconds")
+    finish_interval_sec: float = Field(
+        8.0, description="Simulated finish report interval seconds"
+    )
     report_enabled: bool = Field(
         False, description="Enable HTTP reporting of events to cloud service"
     )
@@ -71,27 +89,40 @@ class Settings(BaseSettings):
     report_retry_max: int = Field(5, description="Max retry attempts per event")
     algo_enabled: bool = Field(True, description="Enable algorithm runner")
     algo_target_fps: int = Field(5, description="Target FPS for algorithm processing")
-    algo_log_path: str = Field("logs/alg_events.jsonl", description="Algorithm event log")
+    algo_log_path: str = Field(
+        "logs/alg_events.jsonl", description="Algorithm event log"
+    )
     face_report_interval_sec: float = Field(
         2.0, description="Min interval seconds between Baidu face binding reports"
     )
     face_search_max_attempts: int = Field(
         3, description="Max Baidu face search attempts per candidate before giving up"
     )
+    face_search_min_interval_sec: float = Field(
+        0.5, description="Min interval between two Baidu face search requests"
+    )
     yolo_backend: str = Field("pt", description="YOLO backend: pt or trt")
-    yolo_engine_path: str = Field("yolo11n-pose-fp16.engine", description="YOLO TRT engine path")
+    yolo_engine_path: str = Field(
+        "yolo11n-pose-fp16.engine", description="YOLO TRT engine path"
+    )
     yolo_names_path: str = Field("pose.names", description="YOLO class names file")
-    yolo_pt_path: str = Field("yolo11n-pose.pt", description="YOLO .pt path for ultralytics")
+    yolo_pt_path: str = Field(
+        "yolo11n-pose.pt", description="YOLO .pt path for ultralytics"
+    )
     yolo_conf_thres: float = Field(0.6, description="YOLO confidence threshold")
     yolo_iou_thres: float = Field(0.45, description="YOLO NMS IoU threshold")
     yolo_imgsz: int = Field(640, description="YOLO inference image size")
-    start_line_y: int = Field(480, description="Start line Y for false start (based on 640px height)")
+    start_line_y: int = Field(
+        480, description="Start line Y for false start (based on 640px height)"
+    )
     finish_line_y: int = Field(520, description="Finish line Y (based on 640px height)")
     start_line_file: str = Field(
-        "", description="Optional JSON calibration file for start line; preferred over START_LINE_Y"
+        "",
+        description="Optional JSON calibration file for start line; preferred over START_LINE_Y",
     )
     finish_line_file: str = Field(
-        "", description="Optional JSON calibration file for finish line; preferred over FINISH_LINE_Y"
+        "",
+        description="Optional JSON calibration file for finish line; preferred over FINISH_LINE_Y",
     )
     lane_x_ranges: str = Field(
         "",
@@ -113,10 +144,16 @@ class Settings(BaseSettings):
     viz_line_color: str = Field("0,0,255", description="Primary line color in B,G,R")
     viz_ready_color: str = Field("0,255,0", description="READY text color in B,G,R")
     viz_alert_color: str = Field("0,0,255", description="Alert color in B,G,R")
-    viz_countdown_color: str = Field("0,255,255", description="Countdown/timer color in B,G,R")
+    viz_countdown_color: str = Field(
+        "0,255,255", description="Countdown/timer color in B,G,R"
+    )
     viz_box_color: str = Field("0,255,0", description="Debug bbox color in B,G,R")
-    viz_toe_ankle_color: str = Field("255,0,0", description="Ankle point color in B,G,R")
-    viz_toe_color: str = Field("0,255,255", description="Toe proxy point/link color in B,G,R")
+    viz_toe_ankle_color: str = Field(
+        "255,0,0", description="Ankle point color in B,G,R"
+    )
+    viz_toe_color: str = Field(
+        "0,255,255", description="Toe proxy point/link color in B,G,R"
+    )
     viz_hud_font_scale: float = Field(1.0, description="HUD font scale")
     viz_hud_font_thickness: int = Field(2, description="HUD font thickness")
     viz_line_thickness: int = Field(2, description="Primary line thickness")

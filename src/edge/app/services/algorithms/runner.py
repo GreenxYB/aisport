@@ -224,6 +224,15 @@ class AlgorithmRunner:
             return []
 
         lane_targets = self._binding_target_lanes()
+        confirmed_lanes = {
+            int(lane)
+            for lane in self.state.binding_confirmed_lanes
+            if isinstance(lane, int)
+        }
+        pending_lanes = [lane for lane in lane_targets if lane not in confirmed_lanes]
+        if lane_targets and not pending_lanes:
+            return []
+
         candidates = self._build_face_candidates(frame, dets, track_ids, lane_targets)
         if not candidates:
             self._binding_diag(

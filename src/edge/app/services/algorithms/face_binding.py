@@ -1,6 +1,7 @@
 from typing import List, Dict
 import base64
 import logging
+import time
 
 import cv2
 import numpy as np
@@ -28,7 +29,13 @@ class FaceBindingAlgo:
         self._attempts_by_key: Dict[str, int] = {}
         self._confirmed_keys: set[str] = set()
         self._session_id: str | None = None
-        if AipFace and self.settings.baidu_app_id and self.settings.baidu_api_key and self.settings.baidu_secret_key:
+        self._last_search_ts: float = 0.0
+        if (
+            AipFace
+            and self.settings.baidu_app_id
+            and self.settings.baidu_api_key
+            and self.settings.baidu_secret_key
+        ):
             self.client = AipFace(
                 self.settings.baidu_app_id,
                 self.settings.baidu_api_key,
@@ -78,7 +85,9 @@ class FaceBindingAlgo:
                 continue
             attempts = self._attempts_by_key.get(binding_key, 0) if binding_key else 0
             # 单目标最多尝试 N 次，控制外部 API 调用量。
-            if binding_key and attempts >= max(1, int(self.settings.face_search_max_attempts)):
+            if binding_key and attempts >= max(
+                1, int(self.settings.face_search_max_attempts)
+            ):
                 continue
             lane = candidate.get("lane")
             image = candidate.get("image")
@@ -100,7 +109,9 @@ class FaceBindingAlgo:
                 "lane": int(lane) if isinstance(lane, int) else lane,
                 "bbox": candidate.get("bbox"),
                 "track_id": candidate.get("track_id"),
-                "attempt": self._attempts_by_key.get(binding_key, 1) if binding_key else 1,
+                "attempt": self._attempts_by_key.get(binding_key, 1)
+                if binding_key
+                else 1,
             }
             results.append(enriched)
         if not results:
@@ -119,9 +130,12 @@ class FaceBindingAlgo:
             logger.error("face encode error: %s", exc)
             return ""
 
-    def search_face_baidu(self, face_base64: str, group_id: str = "default") -> List[Dict]:
+    def search_face_baidu(
+        self, face_base64: str, group_id: str = "default"
+    ) -> List[Dict]:
         """调用百度人脸检索并标准化返回字段。"""
         try:
+            self._respect_rate_limit()
             res_list: List[Dict] = []
             res = self.client.search(face_base64, "BASE64", group_id)
             if res.get("error_code") == 0 and res.get("result", {}).get("user_list"):
@@ -144,3 +158,14 @@ class FaceBindingAlgo:
         except Exception as exc:
             logger.error("face search error: %s", exc)
             return []
+
+    def _respect_rate_limit(self) -> None:
+        """限制连续调用速率，避免触发外部接口 QPS 限额。"""
+        min_interval = float(
+            getattr(self.settings, "face_search_min_interval_sec", 0.5) or 0.5
+        )
+        now = time.monotonic()
+        delta = now - self._last_search_ts
+        if delta < min_interval:
+            time.sleep(min_interval - delta)
+        self._last_search_ts = time.monotonic()
