@@ -295,7 +295,8 @@ class AlgorithmRunner:
 
     def _binding_target_lanes(self) -> List[int]:
         lane_count = int(self.state.config.get("lane_count", 0) or 0)
-        return binding_target_lanes(self.state.bindings, lane_count)
+        candidate_lanes = self.state.config.get("candidate_lanes") or []
+        return binding_target_lanes(self.state.bindings, lane_count, candidate_lanes)
 
     def _build_face_candidates(
         self,

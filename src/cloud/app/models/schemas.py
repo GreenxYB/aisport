@@ -12,11 +12,7 @@ from common.protocol import (  # type: ignore
 
 class SessionCreate(BaseModel):
     project_type: str = Field(..., example="200m")
-    lane_count: int = Field(..., ge=1, le=10)
     start_node_id: int = Field(..., example=1)
-    finish_node_id: int = Field(..., example=7)
-    tracking_node_ids: List[int] = Field(default_factory=list, example=[3, 6])
-    bindings: List[Dict[str, Any]] = Field(default_factory=list)
     auto_start: bool = True
     binding_timeout_sec: int = Field(10, ge=1, le=600)
     start_delay_ms: int = Field(5000, ge=1000)
@@ -24,9 +20,6 @@ class SessionCreate(BaseModel):
     race_timeout_sec: int = Field(60, ge=1, le=3600)
     audio_plan: str = "START_321_GO"
     tracking_active: bool = True
-    sync_time_ms: Optional[int] = Field(
-        None, example=1738416000000, description="Absolute timestamp for time sync"
-    )
 
 
 class Session(BaseModel):
@@ -39,6 +32,9 @@ class Session(BaseModel):
     finish_node_id: int
     tracking_node_ids: List[int] = Field(default_factory=list)
     bindings: List[Dict[str, Any]] = Field(default_factory=list)
+    candidate_lanes: List[int] = Field(default_factory=list)
+    active_lanes: List[int] = Field(default_factory=list)
+    binding_mode: str = "DISCOVER"
     sync_time_ms: Optional[int] = None
     require_bindings: bool = False
     auto_start: bool = True

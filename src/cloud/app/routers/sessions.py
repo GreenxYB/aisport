@@ -28,7 +28,10 @@ async def create_session(
     svc: SessionService = Depends(get_service),
     orchestrator: SessionOrchestrator = Depends(get_orchestrator_service),
 ):
-    session = svc.create(payload)
+    try:
+        session = svc.create(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     await orchestrator.register_session(session.session_id)
     return session
 
@@ -47,13 +50,11 @@ def get_session(session_id: str, svc: SessionService = Depends(get_service)):
 
 
 @router.post("/{session_id}/commands/init", response_model=CommandPayload)
-def build_init_command(
-    session_id: str, payload: SessionCreate, svc: SessionService = Depends(get_service)
-):
+def build_init_command(session_id: str, svc: SessionService = Depends(get_service)):
     session = svc.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return svc.build_init_command(session, payload.start_node_id)
+    return svc.build_init_command(session, session.start_node_id)
 
 
 @router.get("/{session_id}/readiness")
@@ -186,8 +187,27 @@ async def get_session_results(
             if current is None or int(item.get("finish_ts", 0)) >= int(current.get("finish_ts", 0)):
                 latest_finish_by_lane[lane] = item
 
-    target_lanes = set(svc.target_lanes(session))
-    lanes = sorted(target_lanes | set(bindings_by_lane) | set(false_start_by_lane) | set(latest_finish_by_lane))
+    online_nodes = {row["node_id"]: row for row in await manager.list_online()}
+    start_status = (
+        (online_nodes.get(session.start_node_id) or {}).get("last_status") or {}
+    ).get("data", {})
+    status_lanes = {
+        int(lane)
+        for key in ("binding_target_lanes", "binding_confirmed_lanes", "binding_observed_lanes")
+        for lane in (start_status.get(key) or [])
+        if isinstance(lane, int)
+    }
+
+    configured_binding_lanes = {
+        int(item["lane"])
+        for item in session.bindings
+        if isinstance(item, dict)
+        and isinstance(item.get("lane"), int)
+        and any(item.get(key) for key in ("student_id", "feature_id"))
+    }
+    active_lanes = set(svc.target_lanes(session))
+    report_lanes = set(id_by_lane) | set(false_start_by_lane) | set(latest_finish_by_lane)
+    lanes = sorted(active_lanes | configured_binding_lanes | report_lanes | status_lanes)
     results = []
     for lane in lanes:
         binding = bindings_by_lane.get(lane, {})

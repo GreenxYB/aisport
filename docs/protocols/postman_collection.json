@@ -1,13 +1,23 @@
 {
   "info": {
-    "name": "AI Sport Edge Commands",
-    "_postman_id": "a1b2c3d4-edge-commands",
-    "description": "Manual command tests to edge node",
+    "name": "AI Sport Cloud Workflow",
+    "_postman_id": "8e2c6dc5-cloud-workflow",
+    "description": "Mini-program to cloud workflow for smart track running projects.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "variable": [
+    {
+      "key": "cloud_base_url",
+      "value": "http://192.168.31.166:8000"
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    }
+  ],
   "item": [
     {
-      "name": "CMD_INIT",
+      "name": "Create Session - 50m Start 1",
       "request": {
         "method": "POST",
         "header": [
@@ -15,13 +25,17 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_INIT\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"project_type\": \"200m\",\n    \"lane_count\": 8,\n    \"sync_time\": 1738416000000\n  }\n}"
+          "raw": "{\n  \"project_type\": \"50m\",\n  \"start_node_id\": 1,\n  \"auto_start\": true,\n  \"binding_timeout_sec\": 15,\n  \"start_delay_ms\": 5000,\n  \"countdown_seconds\": 3,\n  \"race_timeout_sec\": 60\n}"
         },
-        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions"]
+        }
       }
     },
     {
-      "name": "CMD_BINDING_SYNC",
+      "name": "Create Session - 100m Start 4",
       "request": {
         "method": "POST",
         "header": [
@@ -29,13 +43,17 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_BINDING_SYNC\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"config\": {\n    \"bindings\": [\n      { \"lane\": 1, \"student_id\": \"S101\", \"feature_id\": \"F001\" },\n      { \"lane\": 2, \"student_id\": \"S102\", \"feature_id\": \"F002\" }\n    ]\n  }\n}"
+          "raw": "{\n  \"project_type\": \"100m\",\n  \"start_node_id\": 4,\n  \"auto_start\": true,\n  \"binding_timeout_sec\": 15,\n  \"start_delay_ms\": 5000,\n  \"countdown_seconds\": 3,\n  \"race_timeout_sec\": 80\n}"
         },
-        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions"]
+        }
       }
     },
     {
-      "name": "CMD_START_MONITOR",
+      "name": "Create Session - 200m Start 7",
       "request": {
         "method": "POST",
         "header": [
@@ -43,45 +61,86 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_START_MONITOR\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"expected_start_time\": 1738416005000,\n    \"false_start_check\": true,\n    \"tracking_active\": true,\n    \"countdown_seconds\": 3,\n    \"audio_plan\": \"START_321_GO\"\n  }\n}"
+          "raw": "{\n  \"project_type\": \"200m\",\n  \"start_node_id\": 7,\n  \"auto_start\": true,\n  \"binding_timeout_sec\": 20,\n  \"start_delay_ms\": 5000,\n  \"countdown_seconds\": 3,\n  \"race_timeout_sec\": 120\n}"
         },
-        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions"]
+        }
       }
     },
     {
-      "name": "CMD_RESET_ROUND",
-      "request": {
-        "method": "POST",
-        "header": [
-          { "key": "Content-Type", "value": "application/json" }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_RESET_ROUND\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"reason\": \"FALSE_START\"\n  }\n}"
-        },
-        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
-      }
-    },
-    {
-      "name": "CMD_STOP",
-      "request": {
-        "method": "POST",
-        "header": [
-          { "key": "Content-Type", "value": "application/json" }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_STOP\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"config\": {\n    \"reason\": \"MANUAL_ABORT\"\n  }\n}"
-        },
-        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
-      }
-    },
-    {
-      "name": "STATUS",
+      "name": "List Sessions",
       "request": {
         "method": "GET",
-        "header": [],
-        "url": { "raw": "http://localhost:8100/status", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["status"] }
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions"]
+        }
+      }
+    },
+    {
+      "name": "Get Session",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions/{{session_id}}",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions", "{{session_id}}"]
+        }
+      }
+    },
+    {
+      "name": "Get Diagnostics",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions/{{session_id}}/diagnostics",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions", "{{session_id}}", "diagnostics"]
+        }
+      }
+    },
+    {
+      "name": "Get Results",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{cloud_base_url}}/sessions/{{session_id}}/results",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["sessions", "{{session_id}}", "results"]
+        }
+      }
+    },
+    {
+      "name": "List Online Nodes",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{cloud_base_url}}/nodes/online",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["nodes", "online"]
+        }
+      }
+    },
+    {
+      "name": "Manual Stop Session Nodes",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cmd\": \"CMD_STOP\",\n  \"session_id\": \"{{session_id}}\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"reason\": \"MANUAL_ABORT\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{cloud_base_url}}/nodes/1/dispatch",
+          "host": ["{{cloud_base_url}}"],
+          "path": ["nodes", "1", "dispatch"]
+        }
       }
     }
   ]

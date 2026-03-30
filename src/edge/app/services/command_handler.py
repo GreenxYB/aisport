@@ -171,6 +171,13 @@ class CommandHandler:
 
         bindings = payload.config.get("bindings") if payload.config else None
         self.state.bindings = bindings or []
+        if payload.config:
+            self.state.config["candidate_lanes"] = payload.config.get(
+                "candidate_lanes", self.state.config.get("candidate_lanes", [])
+            )
+            self.state.config["binding_mode"] = payload.config.get(
+                "binding_mode", self.state.config.get("binding_mode")
+            )
         self.state.phase = NodePhase.BINDING
         self.algo.reset_binding_runtime()
 
@@ -368,7 +375,12 @@ class CommandHandler:
             )
         if payload.cmd == "CMD_BINDING_SYNC":
             bindings = config.get("bindings") or []
-            return f"bindings={len(bindings)}"
+            candidate_lanes = config.get("candidate_lanes") or []
+            return (
+                f"bindings={len(bindings)} "
+                f"candidate_lanes={len(candidate_lanes)} "
+                f"binding_mode={config.get('binding_mode')}"
+            )
         if payload.cmd == "CMD_START_MONITOR":
             return (
                 f"start_at={config.get('expected_start_time')} "
@@ -384,7 +396,10 @@ class CommandHandler:
 
     def build_status_report(self) -> NodeStatusReport:
         lane_count = int(self.state.config.get("lane_count", 0) or 0)
-        configured_target_lanes = binding_target_lanes(self.state.bindings, lane_count)
+        candidate_lanes = self.state.config.get("candidate_lanes") or []
+        configured_target_lanes = binding_target_lanes(
+            self.state.bindings, lane_count, candidate_lanes
+        )
 
         observed_lanes: list[int] = []
         lane_debug = self.state.lane_layout_debug
@@ -396,6 +411,7 @@ class CommandHandler:
                         observed_lanes.append(int(item["lane"]))
         observed_lanes = list(dict.fromkeys(observed_lanes))
 
+        role = self.settings.node_role.upper()
         # Prefer lanes actually observed in current frame; fallback to configured lanes.
         if configured_target_lanes and observed_lanes:
             observed_set = set(observed_lanes)
@@ -429,12 +445,17 @@ class CommandHandler:
             if student_id not in confirmed_students
         ]
         pending_lanes = [lane for lane in target_lanes if lane not in confirmed_lanes]
-        binding_required = bool(
-            binding_target_students
-        ) and self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}
-        if self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}:
-            binding_required = bool(target_lanes)
-        binding_ready = (not binding_required) or not pending_lanes
+        waiting_for_first_detection = (
+            bool(configured_target_lanes)
+            and not observed_lanes
+            and not confirmed_lanes
+        )
+        binding_required = bool(binding_target_students) and role in {"START", "ALL_IN_ONE"}
+        if role in {"START", "ALL_IN_ONE"}:
+            binding_required = bool(target_lanes) or waiting_for_first_detection
+        binding_ready = (not binding_required) or (
+            not waiting_for_first_detection and not pending_lanes
+        )
         now_ms = int(time.time() * 1000)
         session_stage = self.state.phase.value
         if self.state.phase == NodePhase.BINDING:
@@ -491,6 +512,7 @@ class CommandHandler:
                 "binding_target_count": len(target_lanes),
                 "binding_target_lanes": target_lanes,
                 "binding_configured_lanes": configured_target_lanes,
+                "binding_candidate_lanes": candidate_lanes,
                 "binding_observed_lanes": observed_lanes,
                 "binding_confirmed_count": len(confirmed_lanes),
                 "binding_confirmed_lanes": confirmed_lanes,

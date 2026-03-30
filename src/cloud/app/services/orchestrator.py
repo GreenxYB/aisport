@@ -259,6 +259,9 @@ class SessionOrchestrator:
         if workflow.all_ready_at_ms is None:
             workflow.all_ready_at_ms = int(time.time() * 1000)
             self._logger.info("session all required nodes ready session=%s", session_id)
+        active_lanes = self._derive_active_lanes(session, online_nodes)
+        if active_lanes:
+            self._session_service.set_active_lanes(session.session_id, active_lanes)
         expected_start_time = int(time.time() * 1000) + session.start_delay_ms
         self._session_service.set_expected_start_time(
             session.session_id, expected_start_time
@@ -370,6 +373,19 @@ class SessionOrchestrator:
             await self._send_stop_if_needed(
                 session, workflow, required, reason="RACE_TIMEOUT"
             )
+
+    @staticmethod
+    def _derive_active_lanes(session, online_nodes: dict[int, dict]) -> list[int]:
+        start_row = online_nodes.get(session.start_node_id) or {}
+        last_status = start_row.get("last_status") or {}
+        status_data = last_status.get("data") or {}
+        for key in ("binding_target_lanes", "binding_confirmed_lanes", "binding_observed_lanes"):
+            values = status_data.get(key)
+            if isinstance(values, list):
+                lanes = [int(lane) for lane in values if isinstance(lane, int)]
+                if lanes:
+                    return sorted(dict.fromkeys(lanes))
+        return []
 
     async def _send_stop_if_needed(
         self,

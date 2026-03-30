@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-def binding_target_lanes(bindings: List[Dict[str, Any]], lane_count: int) -> List[int]:
+def binding_target_lanes(
+    bindings: List[Dict[str, Any]],
+    lane_count: int,
+    candidate_lanes: Optional[List[int]] = None,
+) -> List[int]:
     """从绑定配置提取目标赛道。
 
     设计说明：仅以已绑定赛道为目标，不再按 lane_count 扩展，
@@ -20,6 +24,10 @@ def binding_target_lanes(bindings: List[Dict[str, Any]], lane_count: int) -> Lis
     # 不再按 lane_count 扩展到全跑道，避免无人跑道阻塞 ready。
     if binding_lanes:
         return sorted(dict.fromkeys(binding_lanes))
+    if candidate_lanes:
+        return sorted(
+            dict.fromkeys(int(lane) for lane in candidate_lanes if isinstance(lane, int))
+        )
     return []
 
 
