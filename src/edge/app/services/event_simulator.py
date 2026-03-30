@@ -27,7 +27,9 @@ class EventSimulator:
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._log_path = Path(__file__).resolve().parents[4] / "logs" / "events.jsonl"
-        self._fail_path = Path(__file__).resolve().parents[4] / "logs" / "events_failed.jsonl"
+        self._fail_path = (
+            Path(__file__).resolve().parents[4] / "logs" / "events_failed.jsonl"
+        )
         self._retry_queue: "queue.Queue[dict]" = queue.Queue()
         self._retry_thread: Optional[threading.Thread] = None
         self._retry_running = threading.Event()
@@ -46,7 +48,10 @@ class EventSimulator:
             self.settings.event_interval_sec,
         )
         self._thread = threading.Thread(
-            target=self._loop, args=(session_id, lane_count), daemon=True, name="event-sim"
+            target=self._loop,
+            args=(session_id, lane_count),
+            daemon=True,
+            name="event-sim",
         )
         self._thread.start()
         if self.settings.report_enabled and self.settings.report_retry_enabled:
@@ -160,7 +165,9 @@ class EventSimulator:
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.settings.report_timeout_sec) as resp:
+            with urllib.request.urlopen(
+                req, timeout=self.settings.report_timeout_sec
+            ) as resp:
                 _ = resp.read()
             return True
         except Exception:

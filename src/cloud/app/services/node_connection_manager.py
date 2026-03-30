@@ -5,7 +5,13 @@ from typing import Any, Dict
 
 from fastapi import WebSocket
 
-from common.protocol import CommandPayload, FinishReport, NodeConnectPayload, NodeStatusReport, ViolationReport
+from common.protocol import (
+    CommandPayload,
+    FinishReport,
+    NodeConnectPayload,
+    NodeStatusReport,
+    ViolationReport,
+)
 
 
 class NodeConnectionManager:
@@ -84,7 +90,9 @@ class NodeConnectionManager:
         async with self._lock:
             payload = report.model_dump()
             self._last_violation[report.node_id] = payload
-            self._violations_by_session.setdefault(report.session_id, []).append(payload)
+            self._violations_by_session.setdefault(report.session_id, []).append(
+                payload
+            )
         self._logger.info(
             "violation recorded node_id=%s session=%s count=%s",
             report.node_id,
@@ -151,7 +159,9 @@ class NodeConnectionManager:
                 )
             return sorted(rows, key=lambda item: item["node_id"])
 
-    async def get_session_reports(self, session_id: str) -> dict[str, list[dict[str, Any]]]:
+    async def get_session_reports(
+        self, session_id: str
+    ) -> dict[str, list[dict[str, Any]]]:
         """获取会话级报告聚合结果。"""
         async with self._lock:
             return {

@@ -10,6 +10,7 @@ from .session_service import SessionService
 @dataclass
 class SessionWorkflow:
     """单场会话的下发进度快照。"""
+
     session_id: str
     init_sent_to: set[int] = field(default_factory=set)
     binding_sent_to: set[int] = field(default_factory=set)
@@ -32,7 +33,9 @@ class SessionOrchestrator:
     4) 根据报告判断 FINISHED / TIMEOUT 并下发 STOP
     """
 
-    def __init__(self, session_service: SessionService, node_manager: NodeConnectionManager):
+    def __init__(
+        self, session_service: SessionService, node_manager: NodeConnectionManager
+    ):
         self._session_service = session_service
         self._node_manager = node_manager
         self._lock = asyncio.Lock()
@@ -42,7 +45,9 @@ class SessionOrchestrator:
         self._logger = logging.getLogger("cloud.orchestrator")
         self._throttled_log_ts: dict[str, float] = {}
 
-    def _log_throttled(self, key: str, interval_sec: float, level: str, msg: str, *args) -> None:
+    def _log_throttled(
+        self, key: str, interval_sec: float, level: str, msg: str, *args
+    ) -> None:
         """按 key 节流日志，避免高频轮询阶段刷屏。"""
         now = time.time()
         last = self._throttled_log_ts.get(key, 0.0)
@@ -71,7 +76,9 @@ class SessionOrchestrator:
 
     async def register_session(self, session_id: str) -> None:
         async with self._lock:
-            self._workflows.setdefault(session_id, SessionWorkflow(session_id=session_id))
+            self._workflows.setdefault(
+                session_id, SessionWorkflow(session_id=session_id)
+            )
         self._logger.info("session registered session_id=%s", session_id)
 
     async def _run_loop(self) -> None:
@@ -99,24 +106,36 @@ class SessionOrchestrator:
         if session is None:
             async with self._lock:
                 self._workflows.pop(session_id, None)
-            self._logger.info("session removed from orchestrator session_id=%s", session_id)
+            self._logger.info(
+                "session removed from orchestrator session_id=%s", session_id
+            )
             return
 
         async with self._lock:
-            workflow = self._workflows.setdefault(session_id, SessionWorkflow(session_id=session_id))
+            workflow = self._workflows.setdefault(
+                session_id, SessionWorkflow(session_id=session_id)
+            )
 
-        online_nodes = {row["node_id"]: row for row in await self._node_manager.list_online()}
+        online_nodes = {
+            row["node_id"]: row for row in await self._node_manager.list_online()
+        }
         required = self._session_service.node_ids(session)
         now_ms = int(time.time() * 1000)
 
         if session.status in {"BINDING_TIMEOUT", "RACE_TIMEOUT", "FINISHED", "ABORTED"}:
-            await self._send_stop_if_needed(session, workflow, required, reason=session.status)
+            await self._send_stop_if_needed(
+                session, workflow, required, reason=session.status
+            )
             return
 
-        all_online = all(bool(online_nodes.get(node_id, {}).get("online")) for node_id in required)
+        all_online = all(
+            bool(online_nodes.get(node_id, {}).get("online")) for node_id in required
+        )
         if not all_online:
             offline_nodes = [
-                node_id for node_id in required if not bool(online_nodes.get(node_id, {}).get("online"))
+                node_id
+                for node_id in required
+                if not bool(online_nodes.get(node_id, {}).get("online"))
             ]
             self._log_throttled(
                 f"offline:{session_id}",
@@ -179,7 +198,8 @@ class SessionOrchestrator:
             session.require_bindings
             and not workflow.start_sent
             and workflow.binding_sent_at_ms is not None
-            and now_ms - workflow.binding_sent_at_ms >= int(session.binding_timeout_sec * 1000)
+            and now_ms - workflow.binding_sent_at_ms
+            >= int(session.binding_timeout_sec * 1000)
         ):
             self._logger.warning(
                 "binding timeout reached session=%s timeout_sec=%s",
@@ -192,12 +212,16 @@ class SessionOrchestrator:
                 reason="No valid binding completed before timeout",
                 finished_at_ms=now_ms,
             )
-            await self._send_stop_if_needed(session, workflow, required, reason="BINDING_TIMEOUT")
+            await self._send_stop_if_needed(
+                session, workflow, required, reason="BINDING_TIMEOUT"
+            )
             return
 
         if not session.auto_start or workflow.start_sent:
             # 若不自动开赛或已开赛，转入终态收敛检查。
-            await self._finalize_running_session_if_needed(session, workflow, required, now_ms)
+            await self._finalize_running_session_if_needed(
+                session, workflow, required, now_ms
+            )
             return
 
         all_ready = True
@@ -236,7 +260,9 @@ class SessionOrchestrator:
             workflow.all_ready_at_ms = int(time.time() * 1000)
             self._logger.info("session all required nodes ready session=%s", session_id)
         expected_start_time = int(time.time() * 1000) + session.start_delay_ms
-        self._session_service.set_expected_start_time(session.session_id, expected_start_time)
+        self._session_service.set_expected_start_time(
+            session.session_id, expected_start_time
+        )
         queued = 0
         for node_id in required:
             command = self._session_service.build_start_command(
@@ -269,7 +295,9 @@ class SessionOrchestrator:
                 len(required),
             )
 
-        await self._finalize_running_session_if_needed(session, workflow, required, now_ms)
+        await self._finalize_running_session_if_needed(
+            session, workflow, required, now_ms
+        )
 
     async def _finalize_running_session_if_needed(
         self,
@@ -282,7 +310,9 @@ class SessionOrchestrator:
         if not workflow.start_sent or session.expected_start_time is None:
             return
         if session.status in {"BINDING_TIMEOUT", "RACE_TIMEOUT", "FINISHED", "ABORTED"}:
-            await self._send_stop_if_needed(session, workflow, required, reason=session.status)
+            await self._send_stop_if_needed(
+                session, workflow, required, reason=session.status
+            )
             return
 
         reports = await self._node_manager.get_session_reports(session.session_id)
@@ -316,10 +346,14 @@ class SessionOrchestrator:
                 reason="All target lanes reached a terminal result",
                 finished_at_ms=now_ms,
             )
-            await self._send_stop_if_needed(session, workflow, required, reason="FINISHED")
+            await self._send_stop_if_needed(
+                session, workflow, required, reason="FINISHED"
+            )
             return
 
-        race_deadline_ms = int(session.expected_start_time) + int(session.race_timeout_sec * 1000)
+        race_deadline_ms = int(session.expected_start_time) + int(
+            session.race_timeout_sec * 1000
+        )
         if now_ms >= race_deadline_ms:
             self._logger.warning(
                 "race timeout reached session=%s deadline_ms=%s now_ms=%s",
@@ -333,7 +367,9 @@ class SessionOrchestrator:
                 reason="Race timeout reached before all lanes finished",
                 finished_at_ms=now_ms,
             )
-            await self._send_stop_if_needed(session, workflow, required, reason="RACE_TIMEOUT")
+            await self._send_stop_if_needed(
+                session, workflow, required, reason="RACE_TIMEOUT"
+            )
 
     async def _send_stop_if_needed(
         self,
@@ -347,7 +383,9 @@ class SessionOrchestrator:
             return
         delivered = 0
         for node_id in required:
-            command = self._session_service.build_stop_command(session, node_id, reason=reason)
+            command = self._session_service.build_stop_command(
+                session, node_id, reason=reason
+            )
             if await self._node_manager.send_command(node_id, command):
                 delivered += 1
         if delivered:
@@ -384,5 +422,7 @@ def get_orchestrator(
     session_service: SessionService, node_manager: NodeConnectionManager
 ) -> SessionOrchestrator:
     if not hasattr(get_orchestrator, "_orchestrator"):
-        get_orchestrator._orchestrator = SessionOrchestrator(session_service, node_manager)
+        get_orchestrator._orchestrator = SessionOrchestrator(
+            session_service, node_manager
+        )
     return get_orchestrator._orchestrator  # type: ignore[attr-defined]

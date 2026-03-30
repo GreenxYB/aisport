@@ -28,7 +28,7 @@ QUEUE_MAXSIZE = 10
 class PipelineTimer:
     """
     流水线计时器 - 单例模式
-    
+
     用于测量流水线各阶段的耗时,帮助性能分析和优化
     采用单例模式确保全局只有一个计时器实例
     """
@@ -55,7 +55,7 @@ class PipelineTimer:
     def start(self, stage: str):
         """
         开始计时某个阶段
-        
+
         Args:
             stage: 阶段名称,如 "1_capture", "2_inference" 等
         """
@@ -66,7 +66,7 @@ class PipelineTimer:
     def end(self, stage: str):
         """
         结束计时某个阶段
-        
+
         Args:
             stage: 阶段名称
         """
@@ -92,15 +92,15 @@ class PipelineTimer:
 class Results:
     """
     YOLO 推理结果封装类
-    
+
     用于存储单帧图像的检测结果,包括边界框、置信度、类别和关键点
     支持索引操作,便于数据筛选和子集获取
     """
-    
+
     def __init__(self, orig_img, confs, boxes, cls, keypoints):
         """
         初始化 Results 对象
-        
+
         Args:
             orig_img: 原始图像 (H, W, C)
             confs: 置信度数组 (N,)
@@ -113,11 +113,12 @@ class Results:
         self.boxes = np.array(boxes)
         self.cls = np.array(cls)
         self.keypoints = keypoints
-        
+
         # 验证数据一致性
         n = len(self.confs)
-        assert len(self.boxes) == n and len(self.cls) == n and len(self.keypoints) == n, \
-            "所有输入必须具有相同的长度"
+        assert (
+            len(self.boxes) == n and len(self.cls) == n and len(self.keypoints) == n
+        ), "所有输入必须具有相同的长度"
 
     @property
     def conf(self):
@@ -136,10 +137,10 @@ class Results:
     def __getitem__(self, idx):
         """
         支持索引操作
-        
+
         Args:
             idx: 整数索引或布尔掩码/整数数组
-            
+
         Returns:
             Results: 单个结果或子集结果
         """
@@ -150,7 +151,7 @@ class Results:
                 confs=[self.confs[idx]],
                 boxes=[self.boxes[idx]],
                 cls=[self.cls[idx]],
-                keypoints=[self.keypoints[idx]]
+                keypoints=[self.keypoints[idx]],
             )
         elif isinstance(idx, slice):
             indices = list(range(len(self.confs)))[idx]
@@ -169,7 +170,7 @@ class Results:
                     confs=np.array([]),
                     boxes=np.empty((0, 4)),
                     cls=np.array([]),
-                    keypoints=[]
+                    keypoints=[],
                 )
 
             # Support bool masks and explicit index arrays.
@@ -190,7 +191,7 @@ class Results:
                     confs=confs,
                     boxes=boxes,
                     cls=cls,
-                    keypoints=keypoints
+                    keypoints=keypoints,
                 )
             except IndexError as e:
                 raise IndexError(f"Results.__getitem__ invalid index: {e}")
@@ -201,15 +202,15 @@ class Results:
 class TrackerResults:
     """
     跟踪结果封装类
-    
+
     存储 BYTETracker 的跟踪结果,包含跟踪框、跟踪ID和对应的关键点
     提供可视化绘制功能
     """
-    
+
     def __init__(self, orig_img, result, keypoints):
         """
         初始化 TrackerResults
-        
+
         Args:
             orig_img: 原始图像
             result: 跟踪结果数组 [x1, y1, x2, y2, track_id, conf, cls]
@@ -222,7 +223,7 @@ class TrackerResults:
     def draw(self):
         """
         在图像上绘制跟踪结果
-        
+
         Returns:
             绘制了边界框、跟踪ID和关键点的图像
         """
@@ -254,11 +255,11 @@ class TrackerResults:
 class VideoCaptureThread(threading.Thread):
     """
     视频捕获线程
-    
+
     负责从摄像头或视频源捕获帧,并将帧放入队列供后续处理
     支持真实摄像头和模拟模式
     """
-    
+
     def __init__(
         self,
         source,
@@ -354,12 +355,16 @@ class VideoCaptureThread(threading.Thread):
                     now = time.time()
                     # Throttle repetitive read failures to keep logs readable.
                     if now - last_read_fail_log_ts >= 5:
-                        logger.warning("Frame read failed (count=%s), retrying...", read_fail_count)
+                        logger.warning(
+                            "Frame read failed (count=%s), retrying...", read_fail_count
+                        )
                         last_read_fail_log_ts = now
                     time.sleep(0.1)
                     continue
                 if read_fail_count > 0:
-                    logger.info("Frame read recovered after %s failures", read_fail_count)
+                    logger.info(
+                        "Frame read recovered after %s failures", read_fail_count
+                    )
                     read_fail_count = 0
 
                 if not self.frame_queue.full():
@@ -386,20 +391,20 @@ class VideoCaptureThread(threading.Thread):
 class EdgePipeline:
     """
     边缘视频处理流水线
-    
+
     采用多线程架构,包含以下阶段:
     1. 视频捕获 (Capture) - 从摄像头获取帧
     2. 推理 (Inference) - YOLO 姿态检测
     3. 跟踪 (Tracker) - BYTETracker 多目标跟踪
     4. 业务逻辑 (Logic) - 算法处理和应用逻辑
-    
+
     各阶段通过队列解耦,实现并行处理提高吞吐量
     """
 
     def __init__(self, algo_runner):
         """
         初始化流水线
-        
+
         Args:
             algo_runner: 算法运行器,用于处理跟踪结果
         """
@@ -462,10 +467,10 @@ class EdgePipeline:
         if not self.pt_path.is_absolute():
             self.pt_path = self.model_dir / self.pt_path
         self._capture_prev_ts_ms: Optional[int] = None
-        
+
         # 加载 BYTETracker 配置文件
         try:
-            self.tracker_cfg = check_yaml('bytetrack.yaml')
+            self.tracker_cfg = check_yaml("bytetrack.yaml")
             self.cfg = IterableSimpleNamespace(**YAML.load(self.tracker_cfg))
             logger.info(f"BYTETracker 配置加载成功: {self.tracker_cfg}")
         except Exception as e:
@@ -481,7 +486,9 @@ class EdgePipeline:
                 fuse_score=True,
             )
 
-    def _log_throttled(self, key: str, interval_sec: float, level: str, msg: str, *args) -> None:
+    def _log_throttled(
+        self, key: str, interval_sec: float, level: str, msg: str, *args
+    ) -> None:
         """Write a log line at most once per interval for the same key."""
         now = time.time()
         last = self._throttled_log_ts.get(key, 0.0)
@@ -522,14 +529,24 @@ class EdgePipeline:
             points = shape.get("points") or []
             if len(points) >= 3:
                 pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
-                cv2.polylines(annotated, [pts], isClosed=True, color=(255, 255, 0), thickness=1)
+                cv2.polylines(
+                    annotated, [pts], isClosed=True, color=(255, 255, 0), thickness=1
+                )
                 label_x = int(points[0][0]) + 6
                 label_y = int(points[0][1]) + 22
             else:
                 x1 = int(shape["x1"])
                 x2 = int(shape["x2"])
-                cv2.line(annotated, (x1, 0), (x1, annotated.shape[0] - 1), (255, 255, 0), 1)
-                cv2.line(annotated, (x2 - 1, 0), (x2 - 1, annotated.shape[0] - 1), (255, 255, 0), 1)
+                cv2.line(
+                    annotated, (x1, 0), (x1, annotated.shape[0] - 1), (255, 255, 0), 1
+                )
+                cv2.line(
+                    annotated,
+                    (x2 - 1, 0),
+                    (x2 - 1, annotated.shape[0] - 1),
+                    (255, 255, 0),
+                    1,
+                )
                 label_x = x1 + 6
                 label_y = 22
             cv2.putText(
@@ -561,7 +578,15 @@ class EdgePipeline:
             p1 = tuple(int(v) for v in start_line["p1"])
             p2 = tuple(int(v) for v in start_line["p2"])
             cv2.line(annotated, p1, p2, (0, 0, 255), 2)
-            cv2.putText(annotated, "START", (p1[0] + 8, max(24, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            cv2.putText(
+                annotated,
+                "START",
+                (p1[0] + 8, max(24, p1[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 0, 255),
+                2,
+            )
 
         if self.settings.display_finish_line and role in {"FINISH", "ALL_IN_ONE"}:
             finish_line = load_line_definition(
@@ -574,7 +599,15 @@ class EdgePipeline:
             p1 = tuple(int(v) for v in finish_line["p1"])
             p2 = tuple(int(v) for v in finish_line["p2"])
             cv2.line(annotated, p1, p2, (255, 0, 255), 2)
-            cv2.putText(annotated, "FINISH", (p1[0] + 8, max(24, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            cv2.putText(
+                annotated,
+                "FINISH",
+                (p1[0] + 8, max(24, p1[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 0, 255),
+                2,
+            )
 
         return annotated
 
@@ -634,19 +667,19 @@ class EdgePipeline:
         if not self.running:
             return
         self.logger.info("pipeline stopping")
-        
+
         # 首先关闭窗口，避免窗口未响应
         try:
             cv2.destroyAllWindows()
         except Exception as e:
             self.logger.warning(f"关闭窗口时出错: {e}")
-        
+
         # 标记为停止状态
         self.running = False
-        
+
         # 停止捕获线程
         self.capture_thread.stop()
-        
+
         # 清空队列，确保线程能够退出
         while not self.capture_queue.empty():
             try:
@@ -663,7 +696,7 @@ class EdgePipeline:
                 self.tracking_queue.get(block=False)
             except queue.Empty:
                 break
-        
+
         # Wait for worker threads to finish.
         try:
             # 等待捕获线程退出
@@ -682,13 +715,14 @@ class EdgePipeline:
 
         # 输出性能报告
         self.timer.report()
-        
+
         # 重新创建队列，避免残留数据
         from queue import Queue
+
         self.capture_queue = Queue(maxsize=50)  # 增大队列大小
         self.inference_queue = Queue(maxsize=50)  # 增大队列大小
         self.tracking_queue = Queue(maxsize=50)  # 增大队列大小
-        
+
         # 重置跟踪器配置
         self.cfg = IterableSimpleNamespace(
             tracker_type="bytetrack",
@@ -697,10 +731,10 @@ class EdgePipeline:
             new_track_thresh=0.6,
             track_buffer=30,
             match_thresh=0.8,
-            fuse_score=True
+            fuse_score=True,
         )
         self.logger.info("tracker config reset")
-        
+
         # 重新创建视频捕获线程，以便下次启动时能够重新打开摄像头
         try:
             # 确定视频源:优先使用 RTSP URL,否则使用摄像头设备
@@ -772,7 +806,7 @@ class EdgePipeline:
             return None
 
         if not ok:
-            with self._preview_lock: 
+            with self._preview_lock:
                 self._last_encode_error = "imencode_failed"
             return None
 
@@ -886,7 +920,9 @@ class EdgePipeline:
             dt_ms = max(now_ms - self._capture_prev_ts_ms, 1)
             fps = 1000.0 / dt_ms
             prev = state.capture_fps_est
-            state.capture_fps_est = round(fps if prev is None else prev * 0.8 + fps * 0.2, 2)
+            state.capture_fps_est = round(
+                fps if prev is None else prev * 0.8 + fps * 0.2, 2
+            )
         self._capture_prev_ts_ms = now_ms
 
     def _set_capture_running(self, running: bool) -> None:
@@ -925,7 +961,9 @@ class EdgePipeline:
             if self.model is None:
                 local_model, self.model_kind = self._load_model()
                 self.model = local_model
-                self.logger.info("inference worker ready model_kind=%s", self.model_kind or "none")
+                self.logger.info(
+                    "inference worker ready model_kind=%s", self.model_kind or "none"
+                )
 
             while self.running:
                 try:
@@ -958,7 +996,7 @@ class EdgePipeline:
         finally:
             if local_model is not None:
                 try:
-                    if hasattr(local_model, 'cleanup'):
+                    if hasattr(local_model, "cleanup"):
                         local_model.cleanup()
                     local_model = None
                     self.model = None
@@ -976,7 +1014,9 @@ class EdgePipeline:
         """
         self.logger.info("tracker worker starting")
         try:
-            self.tracker = BYTETracker(args=self.cfg, frame_rate=self.settings.capture_fps)
+            self.tracker = BYTETracker(
+                args=self.cfg, frame_rate=self.settings.capture_fps
+            )
             self.logger.info("tracker worker ready")
         except Exception as e:
             self.logger.error("tracker init failed: %s", e)
