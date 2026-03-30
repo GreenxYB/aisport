@@ -13,6 +13,12 @@ from ..core.state import NodeState
 
 
 class EventSimulator:
+    """本地事件模拟器。
+
+    用于联调阶段在无真实算法输出时，持续生成违规/冲线事件，
+    并复用真实上报链路（publisher 或 HTTP 上报）。
+    """
+
     def __init__(self, state: NodeState, publisher: Any = None):
         self.settings = get_settings()
         self.state = state
@@ -29,6 +35,7 @@ class EventSimulator:
         self._report_fail_count = 0
 
     def start(self, session_id: str, lane_count: int) -> None:
+        """启动模拟主循环与可选重试线程。"""
         if self._running.is_set():
             return
         self._running.set()
@@ -46,6 +53,7 @@ class EventSimulator:
             self._start_retry_worker()
 
     def stop(self) -> None:
+        """停止模拟与重试线程。"""
         if not self._running.is_set():
             return
         self._running.clear()
@@ -55,6 +63,7 @@ class EventSimulator:
         self.logger.info("event simulator stopped")
 
     def _loop(self, session_id: str, lane_count: int) -> None:
+        """周期生成事件并尝试上报。"""
         interval = max(self.settings.event_interval_sec, 0.5)
         finish_interval = max(self.settings.finish_interval_sec, 1.0)
         next_finish = time.time() + finish_interval
@@ -99,11 +108,13 @@ class EventSimulator:
             time.sleep(interval)
 
     def _append(self, event: dict) -> None:
+        """追加写入本地 jsonl，便于离线回放和问题复盘。"""
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         with self._log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _report(self, event: dict) -> None:
+        """优先走 publisher；不可用时按配置走 HTTP 上报。"""
         if self.publisher:
             try:
                 ok = self.publisher.publish(event)
@@ -130,10 +141,12 @@ class EventSimulator:
                 self.settings.report_retry_enabled,
             )
         if self.settings.report_retry_enabled:
+            # 失败后入队，由重试线程统一处理。
             self._retry_queue.put({"event": event, "attempt": 1})
         self._append_failed(event, Exception("report_failed"))
 
     def _send(self, event: dict) -> bool:
+        """将事件投递到 Cloud 报告接口。"""
         msg_type = event.get("msg_type")
         if msg_type == "VIOLATION_EVENT":
             endpoint = "violation"
@@ -154,12 +167,14 @@ class EventSimulator:
             return False
 
     def _append_failed(self, event: dict, exc: Exception) -> None:
+        """记录失败事件与错误原因，便于定位网络或协议问题。"""
         self._fail_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"event": event, "error": str(exc), "ts_ms": int(time.time() * 1000)}
         with self._fail_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
     def _start_retry_worker(self) -> None:
+        """启动失败重试线程。"""
         if self._retry_running.is_set():
             return
         self._retry_running.set()
@@ -174,6 +189,7 @@ class EventSimulator:
         self._retry_thread.start()
 
     def _stop_retry_worker(self) -> None:
+        """停止失败重试线程。"""
         if not self._retry_running.is_set():
             return
         self._retry_running.clear()
@@ -182,6 +198,7 @@ class EventSimulator:
         self.logger.info("event retry worker stopped")
 
     def _retry_loop(self) -> None:
+        """失败重试主循环：指数策略暂未启用，当前为固定间隔重试。"""
         interval = max(self.settings.report_retry_interval_sec, 1.0)
         while self._retry_running.is_set():
             try:

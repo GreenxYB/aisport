@@ -14,6 +14,7 @@ from .finish_line import FinishLineAlgo
 
 
 def _to_jsonable(value: Any) -> Any:
+    """递归转换 numpy 类型，确保事件可 JSON 序列化。"""
     if isinstance(value, dict):
         return {str(k): _to_jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -26,6 +27,12 @@ def _to_jsonable(value: Any) -> Any:
 
 
 class AlgorithmRunner:
+    """算法统一调度器。
+
+    将人脸绑定、起跑违规、冲线判定收敛到同一入口，
+    并在 `_finalize_events()` 统一补字段、落盘与上报。
+    """
+
     def __init__(self, state: NodeState, publisher: Any = None):
         self.settings = get_settings()
         self.state = state
@@ -50,7 +57,10 @@ class AlgorithmRunner:
     def _binding_diag(self, ts_ms: float, message: str, *args) -> None:
         """Throttled binding diagnostics to avoid log flooding."""
         now_ms = int(ts_ms)
-        if self._last_binding_diag_ms is not None and now_ms - self._last_binding_diag_ms < 1500:
+        if (
+            self._last_binding_diag_ms is not None
+            and now_ms - self._last_binding_diag_ms < 1500
+        ):
             return
         self._last_binding_diag_ms = now_ms
         self.logger.info(message, *args)
@@ -99,6 +109,7 @@ class AlgorithmRunner:
         track_ids: List[int],
         keypoints: List,
     ) -> List[Dict]:
+        # 按节点角色执行对应业务，避免无关算法占用算力。
         role = (self.settings.node_role or "START").upper()
         events: List[Dict] = []
         self.face.bind_session(self.state.session_id)
@@ -118,7 +129,10 @@ class AlgorithmRunner:
                 )
             )
 
-        if self.state.phase == NodePhase.MONITORING and role in {"FINISH", "ALL_IN_ONE"}:
+        if self.state.phase == NodePhase.MONITORING and role in {
+            "FINISH",
+            "ALL_IN_ONE",
+        }:
             finish_report = self.finish.process_detections(
                 dets=dets,
                 track_ids=track_ids,
@@ -137,6 +151,7 @@ class AlgorithmRunner:
         dets: List[Dict],
         track_ids: List[int],
     ) -> None:
+        # 记录赛道几何与观测快照，供状态/诊断接口读取。
         if frame is None or frame.size == 0:
             return
         lane_targets = self._binding_target_lanes()
@@ -185,6 +200,7 @@ class AlgorithmRunner:
     def _run_face_binding(
         self, frame: np.ndarray, ts_ms: float, dets: List[Dict], track_ids: List[int]
     ) -> List[Dict]:
+        # 仅在绑定阶段（或开跑前窗口）执行人脸绑定。
         expected_start = self.state.expected_start_time
         in_binding_window = self.state.phase == NodePhase.BINDING or (
             self.state.phase == NodePhase.MONITORING
@@ -196,7 +212,10 @@ class AlgorithmRunner:
 
         interval_ms = int(max(self.settings.face_report_interval_sec, 0.2) * 1000)
         now_ms = int(ts_ms)
-        if self._last_face_report_ms is not None and now_ms - self._last_face_report_ms < interval_ms:
+        if (
+            self._last_face_report_ms is not None
+            and now_ms - self._last_face_report_ms < interval_ms
+        ):
             self._binding_diag(
                 ts_ms,
                 "binding skip: interval throttle remain_ms=%s",
@@ -226,9 +245,19 @@ class AlgorithmRunner:
             )
             return []
 
-        signature = json.dumps(events[0].get("data", []), ensure_ascii=False, sort_keys=True)
-        if signature == self._last_face_signature and self._last_face_report_ms is not None:
-            lanes = [item.get("lane") for item in (events[0].get("data") or []) if isinstance(item, dict)]
+        signature = json.dumps(
+            events[0].get("data", []), ensure_ascii=False, sort_keys=True
+        )
+        # 对同一识别结果做签名去重，避免重复上报。
+        if (
+            signature == self._last_face_signature
+            and self._last_face_report_ms is not None
+        ):
+            lanes = [
+                item.get("lane")
+                for item in (events[0].get("data") or [])
+                if isinstance(item, dict)
+            ]
             self._binding_diag(
                 ts_ms,
                 "binding skip: duplicate report lanes=%s",
@@ -238,8 +267,16 @@ class AlgorithmRunner:
 
         self._last_face_signature = signature
         self._last_face_report_ms = now_ms
-        lanes = [item.get("lane") for item in (events[0].get("data") or []) if isinstance(item, dict)]
-        students = [item.get("student_id") for item in (events[0].get("data") or []) if isinstance(item, dict)]
+        lanes = [
+            item.get("lane")
+            for item in (events[0].get("data") or [])
+            if isinstance(item, dict)
+        ]
+        students = [
+            item.get("student_id")
+            for item in (events[0].get("data") or [])
+            if isinstance(item, dict)
+        ]
         self.logger.info(
             "binding report generated lanes=%s students=%s",
             lanes,
@@ -258,11 +295,14 @@ class AlgorithmRunner:
         track_ids: List[int],
         lane_targets: List[int],
     ) -> List[Dict]:
+        # 每条赛道仅保留一个最优候选框用于人脸识别。
         if frame is None or frame.size == 0 or not dets or not lane_targets:
             return []
 
         confirmed_lanes = {
-            int(lane) for lane in self.state.binding_confirmed_lanes if isinstance(lane, int)
+            int(lane)
+            for lane in self.state.binding_confirmed_lanes
+            if isinstance(lane, int)
         }
         shapes = build_lane_shapes(
             frame_width=frame.shape[1],
@@ -350,7 +390,9 @@ class AlgorithmRunner:
             return f"lane:{lane}:cell:{cx}:{cy}"
         return f"lane:{lane}"
 
-    def _extract_tracker_inputs(self, tracker_result) -> tuple[List[Dict], List[int], List]:
+    def _extract_tracker_inputs(
+        self, tracker_result
+    ) -> tuple[List[Dict], List[int], List]:
         if tracker_result is None:
             return [], [], []
 
@@ -378,7 +420,7 @@ class AlgorithmRunner:
         return dets, track_ids, [d.get("keypoints") for d in dets]
 
     def _finalize_events(self, events: List[Dict], ts_ms: float) -> List[Dict]:
-        # Add common fields
+        # 统一补充公共字段，保证事件结构一致。
         for ev in events:
             ev.setdefault("node_id", self.state.node_id)
             ev.setdefault("session_id", self.state.session_id)
@@ -395,7 +437,9 @@ class AlgorithmRunner:
                     confirmed_students = list(self.state.binding_confirmed_students)
                     confirmed_lanes = list(self.state.binding_confirmed_lanes)
                     assignments = [
-                        item for item in self.state.binding_assignments if isinstance(item, dict)
+                        item
+                        for item in self.state.binding_assignments
+                        if isinstance(item, dict)
                     ]
                     assignment_map = {
                         int(item["lane"]): item
@@ -420,13 +464,68 @@ class AlgorithmRunner:
                     ]
                     if confirmed_students or confirmed_lanes:
                         self.state.binding_confirmed_at_ms = int(ts_ms)
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        lane = item.get("lane")
+                        if not isinstance(lane, int):
+                            continue
+                        student_id = item.get("student_id")
+                        name = item.get("name")
+                        confidence = item.get("confidence")
+                        self.logger.info(
+                            # 关键里程碑：人脸识别成功（lane -> 人员映射）。
+                            "face recognized lane=%s student_id=%s name=%s confidence=%s",
+                            lane,
+                            student_id,
+                            name,
+                            confidence,
+                        )
                 if ev.get("msg_type") == "VIOLATION_EVENT":
                     data = ev.get("data") or []
                     if data and isinstance(data, list):
                         first_item = data[0]
-                        if isinstance(first_item, dict) and first_item.get("event") == "FALSE_START":
+                        if (
+                            isinstance(first_item, dict)
+                            and first_item.get("event") == "FALSE_START"
+                        ):
                             self.state.last_false_start_event = first_item
                             self.state.last_false_start_ts = int(ts_ms)
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("event") != "FALSE_START":
+                            continue
+                        lane = item.get("lane")
+                        track_id = item.get("track_id")
+                        student = self._binding_assignment_for_lane(lane)
+                        self.logger.info(
+                            # 关键里程碑：起跑线越线（抢跑）。
+                            "start line crossed lane=%s track_id=%s student_id=%s name=%s",
+                            lane,
+                            track_id,
+                            student.get("student_id"),
+                            student.get("name"),
+                        )
+                if ev.get("msg_type") == "FINISH_REPORT":
+                    for item in ev.get("data") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        lane = item.get("lane")
+                        track_id = item.get("track_id")
+                        finish_ts = item.get("finish_ts")
+                        rank = item.get("rank")
+                        student = self._binding_assignment_for_lane(lane)
+                        self.logger.info(
+                            # 关键里程碑：到达终点。
+                            "finish reached lane=%s track_id=%s student_id=%s name=%s finish_ts=%s rank=%s",
+                            lane,
+                            track_id,
+                            student.get("student_id"),
+                            student.get("name"),
+                            finish_ts,
+                            rank,
+                        )
             self._append(events)
             self._publish(events)
             self.state.algo_events_generated += len(events)
@@ -449,6 +548,7 @@ class AlgorithmRunner:
                 f.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
     def _publish(self, events: List[Dict]) -> None:
+        """发布事件到上游（通常为 websocket 客户端）。"""
         if not self.publisher:
             return
         for ev in events:
@@ -456,3 +556,19 @@ class AlgorithmRunner:
                 self.publisher.publish(ev)
             except Exception:
                 pass
+
+    def _binding_assignment_for_lane(self, lane: Any) -> Dict[str, Any]:
+        """按赛道号回查绑定信息，优先实时确认结果。"""
+        if not isinstance(lane, int):
+            return {}
+        for item in self.state.binding_assignments:
+            if not isinstance(item, dict):
+                continue
+            if item.get("lane") == lane:
+                return item
+        for item in self.state.bindings:
+            if not isinstance(item, dict):
+                continue
+            if item.get("lane") == lane:
+                return item
+        return {}

@@ -25,6 +25,8 @@ else:
 
 
 class _NoopPipeline:
+    """兜底流水线：当真实 pipeline 导入失败时保证命令流程可跑通。"""
+
     def __init__(self):
         self.running = False
 
@@ -70,14 +72,19 @@ class CommandHandler:
         # Capture -> inference -> tracker -> business logic pipeline.
         if EdgePipeline is None:
             self.pipeline = _NoopPipeline()
-            self.logger.warning("EdgePipeline unavailable, falling back to no-op pipeline: %s", PIPELINE_IMPORT_ERROR)
+            self.logger.warning(
+                "EdgePipeline unavailable, falling back to no-op pipeline: %s",
+                PIPELINE_IMPORT_ERROR,
+            )
         else:
             self.pipeline = EdgePipeline(algo_runner=self.algo)
 
         if self.settings.auto_start_capture:
             self.pipeline.start()
             self.state.capture_running = self.pipeline.running
-            self.logger.info("capture auto-start finished running=%s", self.pipeline.running)
+            self.logger.info(
+                "capture auto-start finished running=%s", self.pipeline.running
+            )
 
         self.allowed_cmds = {
             "CMD_INIT",
@@ -100,7 +107,12 @@ class CommandHandler:
         """Dispatch one command and persist updated edge state."""
         started = time.time()
         if payload.cmd not in self.allowed_cmds:
-            self.logger.warning("unsupported command cmd=%s session=%s node=%s", payload.cmd, payload.session_id, payload.node_id)
+            self.logger.warning(
+                "unsupported command cmd=%s session=%s node=%s",
+                payload.cmd,
+                payload.session_id,
+                payload.node_id,
+            )
             raise HTTPException(status_code=400, detail="unsupported command")
 
         handler = self._dispatch_map[payload.cmd]
@@ -113,6 +125,7 @@ class CommandHandler:
         )
 
         handler(payload)
+        # 每次命令处理后都持久化，便于异常重启后恢复最近状态。
         self._persist_state()
 
         elapsed_ms = int((time.time() - started) * 1000)
@@ -165,7 +178,11 @@ class CommandHandler:
             lane_count = int(self.state.config.get("lane_count", 1) or 1)
             self.event_sim.start(self.state.session_id or "UNKNOWN", lane_count)
         self._touch(payload.cmd)
-        self.logger.info("binding synced count=%s session=%s", len(self.state.bindings), self.state.session_id)
+        self.logger.info(
+            "binding synced count=%s session=%s",
+            len(self.state.bindings),
+            self.state.session_id,
+        )
 
     def _handle_start_monitor(self, payload: CommandPayload) -> None:
         """Switch to MONITORING phase and ensure pipeline is running."""
@@ -189,7 +206,11 @@ class CommandHandler:
                 self.pipeline.start()
             except Exception as exc:
                 self.state.capture_error = str(exc)
-                self.logger.error("pipeline start failed session=%s error=%s", self.state.session_id, exc)
+                self.logger.error(
+                    "pipeline start failed session=%s error=%s",
+                    self.state.session_id,
+                    exc,
+                )
                 raise HTTPException(status_code=503, detail="camera open failed")
 
         self.state.capture_running = self.pipeline.running
@@ -217,9 +238,10 @@ class CommandHandler:
         stop_capture = bool(
             (payload.config or {}).get(
                 "stop_capture",
-                False if reason == "BINDING_TIMEOUT" else True,
+                False,
             )
         )
+        # 默认不断流：单次结束后保持预览窗口与相机开启，方便连续调试。
         if reason == "BINDING_TIMEOUT":
             try:
                 status = self.build_status_report().data
@@ -231,7 +253,9 @@ class CommandHandler:
                     status.get("session_stage"),
                     status.get("binding_ready"),
                     status.get("binding_required"),
-                    status.get("binding_configured_lanes", status.get("binding_target_lanes")),
+                    status.get(
+                        "binding_configured_lanes", status.get("binding_target_lanes")
+                    ),
                     status.get("binding_observed_lanes"),
                     status.get("binding_confirmed_lanes"),
                     status.get("binding_pending_lanes"),
@@ -289,7 +313,11 @@ class CommandHandler:
 
         self.event_sim.stop()
         self._touch(payload.cmd)
-        self.logger.info("round reset session=%s phase=%s", self.state.session_id, self.state.phase.value)
+        self.logger.info(
+            "round reset session=%s phase=%s",
+            self.state.session_id,
+            self.state.phase.value,
+        )
 
     def _handle_heartbeat(self, payload: CommandPayload) -> None:
         """Keepalive command."""
@@ -315,7 +343,11 @@ class CommandHandler:
         """Validate command can be executed in current phase."""
         if self.state.phase not in allowed:
             allowed_values = [p.value for p in allowed]
-            self.logger.warning("phase mismatch current=%s allowed=%s", self.state.phase.value, allowed_values)
+            self.logger.warning(
+                "phase mismatch current=%s allowed=%s",
+                self.state.phase.value,
+                allowed_values,
+            )
             raise HTTPException(
                 status_code=409,
                 detail=f"invalid phase {self.state.phase}; allowed: {allowed_values}",
@@ -325,7 +357,6 @@ class CommandHandler:
         """Update basic command metadata."""
         self.state.last_command = cmd
         self.state.last_updated_ms = int(time.time() * 1000)
-
 
     @staticmethod
     def _summarize_command(payload: CommandPayload) -> str:
@@ -368,7 +399,9 @@ class CommandHandler:
         # Prefer lanes actually observed in current frame; fallback to configured lanes.
         if configured_target_lanes and observed_lanes:
             observed_set = set(observed_lanes)
-            target_lanes = [lane for lane in configured_target_lanes if lane in observed_set]
+            target_lanes = [
+                lane for lane in configured_target_lanes if lane in observed_set
+            ]
             if not target_lanes:
                 target_lanes = configured_target_lanes
         else:
@@ -391,21 +424,27 @@ class CommandHandler:
         confirmed_students = list(dict.fromkeys(self.state.binding_confirmed_students))
         confirmed_lanes = list(dict.fromkeys(self.state.binding_confirmed_lanes))
         pending_students = [
-            student_id for student_id in binding_target_students if student_id not in confirmed_students
+            student_id
+            for student_id in binding_target_students
+            if student_id not in confirmed_students
         ]
-        pending_lanes = [
-            lane for lane in target_lanes if lane not in confirmed_lanes
-        ]
-        binding_required = bool(binding_target_students) and self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}
+        pending_lanes = [lane for lane in target_lanes if lane not in confirmed_lanes]
+        binding_required = bool(
+            binding_target_students
+        ) and self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}
         if self.settings.node_role.upper() in {"START", "ALL_IN_ONE"}:
             binding_required = bool(target_lanes)
         binding_ready = (not binding_required) or not pending_lanes
         now_ms = int(time.time() * 1000)
         session_stage = self.state.phase.value
         if self.state.phase == NodePhase.BINDING:
-            session_stage = "WAIT_BINDING" if binding_required and not binding_ready else "BOUND"
+            session_stage = (
+                "WAIT_BINDING" if binding_required and not binding_ready else "BOUND"
+            )
         elif self.state.phase == NodePhase.MONITORING:
-            if self.state.expected_start_time and now_ms < int(self.state.expected_start_time):
+            if self.state.expected_start_time and now_ms < int(
+                self.state.expected_start_time
+            ):
                 session_stage = "COUNTDOWN"
             else:
                 session_stage = "RUNNING"
@@ -467,8 +506,11 @@ class CommandHandler:
                 "finish_line_status": finish_line_status,
                 "lane_layout_debug": self.state.lane_layout_debug,
                 "last_lane_observation_ts": self.state.last_lane_observation_ts,
-                "camera_ready": self.state.capture_running and not self.state.capture_error,
-                "tracking_active": bool(self.state.config.get("tracking_active", False)),
+                "camera_ready": self.state.capture_running
+                and not self.state.capture_error,
+                "tracking_active": bool(
+                    self.state.config.get("tracking_active", False)
+                ),
                 "expected_start_time": self.state.expected_start_time,
                 "ready_ts": self.state.config.get("ready_ts"),
                 "countdown_seconds": self.state.config.get("countdown_seconds"),
@@ -502,5 +544,7 @@ class CommandHandler:
         except FileNotFoundError:
             return NodeState(node_id=self.settings.node_id)
         except Exception as exc:  # corrupted or incompatible state file
-            logging.getLogger("edge.command").warning("failed to load state.json, fallback to empty state: %s", exc)
+            logging.getLogger("edge.command").warning(
+                "failed to load state.json, fallback to empty state: %s", exc
+            )
             return NodeState(node_id=self.settings.node_id)

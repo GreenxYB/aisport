@@ -5,11 +5,17 @@ from ..models.schemas import SessionCreate, Session, CommandPayload
 
 
 class SessionService:
+    """会话领域服务。
+
+    负责会话生命周期的内存态管理，以及构造下发到 Edge 的标准命令。
+    """
+
     def __init__(self):
         # TODO: replace in-memory store with real DB
         self._sessions: Dict[str, Session] = {}
 
     def create(self, payload: SessionCreate) -> Session:
+        """创建会话并初始化调度参数。"""
         session_id = self._generate_session_id()
         session = Session(
             session_id=session_id,
@@ -65,6 +71,7 @@ class SessionService:
         )
 
     def update_status(self, session_id: str, status: str) -> Session | None:
+        """更新会话状态（如 CREATED -> RUNNING）。"""
         session = self._sessions.get(session_id)
         if session is None:
             return None
@@ -72,6 +79,7 @@ class SessionService:
         return session
 
     def set_expected_start_time(self, session_id: str, expected_start_time: int) -> Session | None:
+        """写入统一起跑时间戳（毫秒）。"""
         session = self._sessions.get(session_id)
         if session is None:
             return None
@@ -79,6 +87,7 @@ class SessionService:
         return session
 
     def finish(self, session_id: str, status: str, reason: str | None = None, finished_at_ms: int | None = None) -> Session | None:
+        """结束会话并记录终止原因。"""
         session = self._sessions.get(session_id)
         if session is None:
             return None
@@ -89,6 +98,7 @@ class SessionService:
 
     @staticmethod
     def node_ids(session: Session) -> List[int]:
+        """返回去重后节点列表（保持原有顺序）。"""
         ids = [session.start_node_id, session.finish_node_id, *session.tracking_node_ids]
         seen: set[int] = set()
         ordered: List[int] = []
@@ -100,6 +110,7 @@ class SessionService:
 
     @staticmethod
     def build_start_command(session: Session, node_id: int, expected_start_time: int, countdown_seconds: int, audio_plan: str, tracking_active: bool = True) -> CommandPayload:
+        """构造开始监控命令（包含统一起跑时间）。"""
         return CommandPayload(
             cmd="CMD_START_MONITOR",
             session_id=session.session_id,
@@ -126,6 +137,7 @@ class SessionService:
 
     @staticmethod
     def target_lanes(session: Session) -> List[int]:
+        """计算本场目标赛道：优先使用绑定赛道，兜底用 1..lane_count。"""
         lanes = [
             int(item.get("lane"))
             for item in session.bindings
@@ -137,6 +149,10 @@ class SessionService:
 
     @staticmethod
     def is_node_ready(session: Session, status_data: dict | None, node_role: str | None = None) -> bool:
+        """判断节点是否可开赛。
+
+        START/ALL_IN_ONE 节点在要求绑定时，除 camera_ready 外还必须 binding_ready。
+        """
         if not status_data:
             return False
         camera_ready = bool(status_data.get("camera_ready"))

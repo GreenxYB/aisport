@@ -9,6 +9,7 @@ from .session_service import SessionService
 
 @dataclass
 class SessionWorkflow:
+    """单场会话的下发进度快照。"""
     session_id: str
     init_sent_to: set[int] = field(default_factory=set)
     binding_sent_to: set[int] = field(default_factory=set)
@@ -22,6 +23,15 @@ class SessionWorkflow:
 
 
 class SessionOrchestrator:
+    """会话自动编排器。
+
+    按固定 tick 执行以下流程：
+    1) 检查节点在线
+    2) 依次下发 INIT / BINDING
+    3) 检查 readiness 后下发 START
+    4) 根据报告判断 FINISHED / TIMEOUT 并下发 STOP
+    """
+
     def __init__(self, session_service: SessionService, node_manager: NodeConnectionManager):
         self._session_service = session_service
         self._node_manager = node_manager
@@ -33,6 +43,7 @@ class SessionOrchestrator:
         self._throttled_log_ts: dict[str, float] = {}
 
     def _log_throttled(self, key: str, interval_sec: float, level: str, msg: str, *args) -> None:
+        """按 key 节流日志，避免高频轮询阶段刷屏。"""
         now = time.time()
         last = self._throttled_log_ts.get(key, 0.0)
         if now - last < interval_sec:
@@ -64,6 +75,7 @@ class SessionOrchestrator:
         self._logger.info("session registered session_id=%s", session_id)
 
     async def _run_loop(self) -> None:
+        """后台调度循环。"""
         while not self._stop_event.is_set():
             try:
                 await self._tick()
@@ -74,6 +86,7 @@ class SessionOrchestrator:
             await asyncio.sleep(0.5)
 
     async def _tick(self) -> None:
+        """遍历当前所有会话并推进状态机。"""
         async with self._lock:
             session_ids = list(self._workflows.keys())
 
@@ -81,6 +94,7 @@ class SessionOrchestrator:
             await self._tick_session(session_id)
 
     async def _tick_session(self, session_id: str) -> None:
+        """推进单个会话：在线检查、命令下发、启动与收敛。"""
         session = self._session_service.get(session_id)
         if session is None:
             async with self._lock:
@@ -115,6 +129,7 @@ class SessionOrchestrator:
             )
             return
 
+        # 阶段 1：确保所有 required 节点都收到 INIT。
         init_dispatched = False
         for node_id in required:
             if node_id in workflow.init_sent_to:
@@ -137,6 +152,7 @@ class SessionOrchestrator:
         if len(workflow.init_sent_to) < len(required):
             return
 
+        # 阶段 2：确保所有 required 节点都收到 BINDING。
         binding_dispatched = False
         for node_id in required:
             if node_id in workflow.binding_sent_to:
@@ -180,6 +196,7 @@ class SessionOrchestrator:
             return
 
         if not session.auto_start or workflow.start_sent:
+            # 若不自动开赛或已开赛，转入终态收敛检查。
             await self._finalize_running_session_if_needed(session, workflow, required, now_ms)
             return
 
@@ -214,6 +231,7 @@ class SessionOrchestrator:
             )
             return
 
+        # 阶段 3：全部就绪后下发统一起跑时间。
         if workflow.all_ready_at_ms is None:
             workflow.all_ready_at_ms = int(time.time() * 1000)
             self._logger.info("session all required nodes ready session=%s", session_id)
@@ -260,6 +278,7 @@ class SessionOrchestrator:
         required: list[int],
         now_ms: int,
     ) -> None:
+        """根据会话报告判断是否应结束比赛并触发 STOP。"""
         if not workflow.start_sent or session.expected_start_time is None:
             return
         if session.status in {"BINDING_TIMEOUT", "RACE_TIMEOUT", "FINISHED", "ABORTED"}:
@@ -323,6 +342,7 @@ class SessionOrchestrator:
         required: list[int],
         reason: str,
     ) -> None:
+        """幂等发送 STOP，避免重复停机命令。"""
         if workflow.stop_sent:
             return
         delivered = 0

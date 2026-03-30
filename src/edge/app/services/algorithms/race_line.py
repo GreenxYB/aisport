@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 
 def _resolve_path(line_file: str) -> Optional[Path]:
+    """解析标线文件路径（支持相对路径）。"""
     if not line_file:
         return None
     path = Path(str(line_file))
@@ -39,6 +40,7 @@ def load_line_definition(
     fallback_y: int,
     line_name: str,
 ) -> Dict[str, Any]:
+    """加载起/终点线定义，并缩放到当前运行分辨率。"""
     payload = _load_payload(line_file)
     if payload is not None:
         p1 = payload.get("p1")
@@ -80,6 +82,7 @@ def inspect_line_definition(
     fallback_y: int,
     line_name: str,
 ) -> Dict[str, Any]:
+    """返回标线配置体检结果（是否可用、是否校准、告警信息）。"""
     info = {
         "name": line_name,
         "source": "fallback_y",
@@ -106,6 +109,7 @@ def inspect_line_definition(
 
 
 def line_y_at_x(line: Dict[str, Any], x: float) -> float:
+    """计算给定 x 在标线上的 y 值（支持倾斜线）。"""
     p1 = line.get("p1") or [0, 0]
     p2 = line.get("p2") or [0, 0]
     x1, y1 = float(p1[0]), float(p1[1])
@@ -117,6 +121,7 @@ def line_y_at_x(line: Dict[str, Any], x: float) -> float:
 
 
 def point_crossed_line(point: Tuple[float, float] | list[float], line: Dict[str, Any]) -> bool:
+    """判断点是否已越过标线（y >= line_y_at_x）。"""
     if not isinstance(point, (list, tuple)) or len(point) < 2:
         return False
     x, y = float(point[0]), float(point[1])

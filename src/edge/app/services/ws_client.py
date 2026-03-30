@@ -11,6 +11,7 @@ from common.protocol import CommandAckMessage, CommandPayload, NodeConnectPayloa
 
 
 def _to_jsonable(value):
+    """将 numpy 等不可直接 JSON 序列化的数据转换为基础类型。"""
     try:
         import numpy as np
     except Exception:  # pragma: no cover
@@ -29,6 +30,15 @@ def _to_jsonable(value):
 
 
 class EdgeWsClient:
+    """Edge 与 Cloud 的长连接客户端。
+
+    职责：
+    1) 建立并维持 websocket 连接（含断线重连）
+    2) 接收 Cloud 下发命令并回 ACK
+    3) 周期上报节点状态
+    4) 异步发送算法事件（ID/违规/冲线）
+    """
+
     def __init__(self, handler):
         self.handler = handler
         self.settings = handler.settings
@@ -40,6 +50,7 @@ class EdgeWsClient:
         self._disconnect_count = 0
 
     def start(self) -> None:
+        """启动后台线程并绑定发布器。"""
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
@@ -48,10 +59,12 @@ class EdgeWsClient:
         self._thread.start()
 
     def stop(self) -> None:
+        """停止客户端并解绑发布器。"""
         self._stop_event.set()
         self.handler.set_publisher(None)
 
     def publish(self, message: dict) -> bool:
+        """将业务事件压入发送队列，由发送协程统一出站。"""
         self._outgoing.put(_to_jsonable(message))
         return True
 
@@ -72,6 +85,7 @@ class EdgeWsClient:
 
         while not self._stop_event.is_set():
             try:
+                # 与 Cloud 建立连接后，先发 CONNECT 与一次完整状态快照。
                 async with websockets.connect(
                     self.settings.cloud_ws_url,
                     ping_interval=30,
@@ -100,6 +114,7 @@ class EdgeWsClient:
             except Exception as exc:
                 self._disconnect_count += 1
                 now = time.time()
+                # 重连日志节流：避免网络抖动时刷屏。
                 if now - self._last_disconnect_log_ts >= 10:
                     self._last_disconnect_log_ts = now
                     self.logger.warning(
@@ -112,6 +127,7 @@ class EdgeWsClient:
                 await asyncio.sleep(self.settings.ws_reconnect_interval_sec)
 
     async def _handle_message(self, ws, raw_message: str) -> None:
+        """处理 Cloud 下发消息：CONNECTED / 命令消息。"""
         try:
             payload = json.loads(raw_message)
         except json.JSONDecodeError:
@@ -128,6 +144,7 @@ class EdgeWsClient:
 
         try:
             command = CommandPayload(**payload)
+            # 命令处理放在线程池，避免阻塞当前事件循环。
             await asyncio.to_thread(self.handler.handle, command)
             ack = CommandAckMessage(
                 node_id=self.settings.node_id,
@@ -153,14 +170,17 @@ class EdgeWsClient:
             )
             await ws.send(json.dumps(ack.model_dump()))
         finally:
+            # 无论成功失败，都回传最新状态，便于 Cloud 侧做状态收敛。
             await ws.send(json.dumps(self.handler.build_status_report().model_dump()))
 
     async def _status_loop(self, ws) -> None:
+        """定时状态上报循环。"""
         while not self._stop_event.is_set():
             await asyncio.sleep(self.settings.ws_status_interval_sec)
             await ws.send(json.dumps(self.handler.build_status_report().model_dump()))
 
     async def _sender_loop(self, ws) -> None:
+        """事件发送循环：从队列取消息并发送到 Cloud。"""
         while not self._stop_event.is_set():
             try:
                 message = self._outgoing.get_nowait()
@@ -170,6 +190,7 @@ class EdgeWsClient:
 
             await ws.send(json.dumps(message))
             if message.get("msg_type") in {"ID_REPORT", "VIOLATION_EVENT", "FINISH_REPORT"}:
+                # 仅统计关键业务事件，便于在状态页观察上报吞吐。
                 self.handler.state.reports_sent += 1
 
     def _build_connect_payload(self) -> NodeConnectPayload:
@@ -187,6 +208,7 @@ class EdgeWsClient:
 
 
 def get_ws_client(handler):
+    """进程级单例，避免重复建立多个 websocket 客户端。"""
     if not hasattr(get_ws_client, "_client"):
         get_ws_client._client = EdgeWsClient(handler)
     return get_ws_client._client  # type: ignore[attr-defined]

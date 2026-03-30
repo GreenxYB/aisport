@@ -6,6 +6,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 def binding_target_lanes(bindings: List[Dict[str, Any]], lane_count: int) -> List[int]:
+    """从绑定配置提取目标赛道。
+
+    设计说明：仅以已绑定赛道为目标，不再按 lane_count 扩展，
+    避免无人赛道影响 ready 判定。
+    """
     binding_lanes = [
         int(item.get("lane"))
         for item in bindings
@@ -55,6 +60,7 @@ def parse_lane_polygons(
     frame_width: int,
     frame_height: int,
 ) -> Dict[int, List[Tuple[int, int]]]:
+    """解析多边形赛道定义（支持 JSON 与文本两种格式）。"""
     polygons: Dict[int, List[Tuple[int, int]]] = {}
     if not lane_polygons_text:
         return polygons
@@ -122,6 +128,7 @@ def load_lane_polygons_from_file(
     frame_width: int,
     frame_height: int,
 ) -> Dict[int, List[Tuple[int, int]]]:
+    """从校准文件加载赛道多边形，并按运行分辨率缩放。"""
     payload = _load_lane_layout_payload(lane_layout_file)
     if payload is None:
         return {}
@@ -191,6 +198,10 @@ def available_lane_targets(
     lane_polygons_text: str = "",
     lane_layout_file: str = "",
 ) -> List[int]:
+    """计算可用赛道编号。
+
+    优先级：文件 lanes > inline polygons > x ranges > bindings。
+    """
     payload = _load_lane_layout_payload(lane_layout_file)
     if payload and isinstance(payload.get("lanes"), list):
         lanes = [
@@ -221,6 +232,7 @@ def inspect_lane_layout(
     lane_polygons_text: str = "",
     lane_layout_file: str = "",
 ) -> Dict[str, Any]:
+    """输出赛道布局诊断信息（来源/覆盖率/告警）。"""
     info: Dict[str, Any] = {
         "target_lanes": list(target_lanes),
         "source": "auto",
@@ -286,6 +298,7 @@ def inspect_lane_layout(
 def parse_lane_ranges(
     lane_ranges_text: str, frame_width: int
 ) -> Dict[int, tuple[int, int]]:
+    """解析 lane x 范围配置，如 "1:0-320,2:320-640"。"""
     ranges: Dict[int, tuple[int, int]] = {}
     if not lane_ranges_text:
         return ranges
@@ -315,6 +328,7 @@ def build_lane_shapes(
     lane_polygons_text: str = "",
     lane_layout_file: str = "",
 ) -> List[Dict[str, Any]]:
+    """构建统一赛道几何结构（polygon 或 segment）。"""
     if frame_width <= 0 or frame_height <= 0 or not target_lanes:
         return []
 
@@ -387,6 +401,7 @@ def build_lane_shapes(
 
 
 def _point_in_polygon(x: float, y: float, polygon: List[Tuple[int, int]]) -> bool:
+    """射线法判断点是否在多边形内部。"""
     inside = False
     n = len(polygon)
     j = n - 1
@@ -413,6 +428,7 @@ def resolve_lane_by_point(
     lane_polygons_text: str = "",
     lane_layout_file: str = "",
 ) -> Optional[int]:
+    """根据点坐标解析所属赛道。"""
     shapes = build_lane_shapes(
         frame_width=frame_width,
         frame_height=frame_height,
@@ -439,6 +455,7 @@ def resolve_lane_by_center_x(
     target_lanes: List[int],
     lane_ranges_text: str = "",
 ) -> Optional[int]:
+    """仅按 x 中心点解析赛道（兼容旧调用）。"""
     return resolve_lane_by_point(
         x=center_x,
         y=0,

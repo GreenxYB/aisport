@@ -7,7 +7,7 @@ import numpy as np
 from queue import Queue
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict
 
 from ultralytics.trackers import BYTETracker
 from ultralytics.utils import IterableSimpleNamespace, YAML
@@ -379,6 +379,7 @@ class VideoCaptureThread(threading.Thread):
                 pass
 
     def stop(self):
+        """通知采集线程退出（真正退出由 run() 循环检查 running 完成）。"""
         self.running = False
 
 
@@ -490,6 +491,7 @@ class EdgePipeline:
         getattr(self.logger, level)(msg, *args)
 
     def _overlay_lane_guides(self, frame: np.ndarray) -> np.ndarray:
+        """在预览帧叠加赛道引导线（仅视觉辅助，不参与判定）。"""
         if not self.settings.display_lane_guides or frame is None or frame.size == 0:
             return frame
         state = getattr(self.algo_runner, "state", None)
@@ -542,6 +544,7 @@ class EdgePipeline:
         return annotated
 
     def _overlay_race_lines(self, frame: np.ndarray) -> np.ndarray:
+        """按节点角色叠加起跑线/终点线，便于现场校验标线是否正确。"""
         if frame is None or frame.size == 0:
             return frame
         annotated = frame.copy()
@@ -576,7 +579,10 @@ class EdgePipeline:
         return annotated
 
     def start(self):
-        """启动流水线所有线程"""
+        """启动流水线所有线程。
+
+        启动前会清理旧队列残留，避免上一轮缓存数据污染当前轮次。
+        """
         if self.running:
             return
         self.logger.info(
@@ -618,7 +624,13 @@ class EdgePipeline:
         self.logger.info("pipeline started threads=capture,inference,tracker,logic")
 
     def stop(self):
-        """停止流水线"""
+        """停止流水线并重建线程资源。
+
+        说明：
+        - 先停窗口与采集，再等待其余线程退出
+        - 输出性能统计
+        - 重建队列/线程，支持下一轮快速重启
+        """
         if not self.running:
             return
         self.logger.info("pipeline stopping")
@@ -725,6 +737,7 @@ class EdgePipeline:
         self.logger.info("pipeline stopped")
 
     def _update_preview_cache(self, frame: np.ndarray) -> None:
+        """缓存最新预览帧与 JPEG，供 HTTP 预览接口快速读取。"""
         preview = np.ascontiguousarray(frame)
         try:
             ok, buf = cv2.imencode(".jpg", preview)
@@ -743,6 +756,7 @@ class EdgePipeline:
                 self._last_encode_error = "imencode_failed"
 
     def snapshot_jpeg(self) -> Optional[bytes]:
+        """获取当前预览 JPEG；若缓存缺失则按需即时编码。"""
         with self._preview_lock:
             if self._last_jpeg:
                 return self._last_jpeg
@@ -769,13 +783,16 @@ class EdgePipeline:
         return jpeg
 
     def last_encode_error(self) -> Optional[str]:
+        """返回最近一次预览编码错误。"""
         with self._preview_lock:
             return self._last_encode_error
 
     def _empty_results(self, frame: np.ndarray) -> Results:
+        """构造空检测结果，统一下游处理分支。"""
         return Results(frame, np.array([]), np.empty((0, 4)), np.array([]), [])
 
     def _load_model(self):
+        """按配置加载 TRT/PT 模型，返回 (model, model_kind)。"""
         backend = self.yolo_backend
 
         if backend == "trt":
@@ -815,6 +832,7 @@ class EdgePipeline:
             return None, None
 
     def _infer_with_model(self, frame: np.ndarray) -> Results:
+        """执行单帧推理并转为统一 Results 结构。"""
         if self.model is None:
             return self._empty_results(frame)
 
@@ -858,6 +876,7 @@ class EdgePipeline:
         return Results(frame, np.array(confs), boxes, np.array(cls), keypoints)
 
     def _update_capture_stats(self) -> None:
+        """更新采集时间戳与平滑 FPS 估计。"""
         state = getattr(self.algo_runner, "state", None)
         if state is None:
             return
@@ -871,6 +890,7 @@ class EdgePipeline:
         self._capture_prev_ts_ms = now_ms
 
     def _set_capture_running(self, running: bool) -> None:
+        """回写采集运行状态到 NodeState。"""
         state = getattr(self.algo_runner, "state", None)
         if state is None:
             return
@@ -882,6 +902,7 @@ class EdgePipeline:
             self.logger.info("capture_running changed %s -> %s", prev, running)
 
     def _set_capture_error(self, error: Optional[str]) -> None:
+        """回写采集错误到 NodeState，并做变化日志。"""
         state = getattr(self.algo_runner, "state", None)
         if state is None:
             return
