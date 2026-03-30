@@ -15,7 +15,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_INIT\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"IDENTITY_BINDING\",\n  \"config\": {\n    \"project_type\": \"200m\",\n    \"lane_count\": 8,\n    \"sync_time\": 1738416000000\n  }\n}"
+          "raw": "{\n  \"cmd\": \"CMD_INIT\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"project_type\": \"200m\",\n    \"lane_count\": 8,\n    \"sync_time\": 1738416000000\n  }\n}"
         },
         "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
       }
@@ -43,7 +43,21 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"cmd\": \"CMD_START_MONITOR\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"config\": {\n    \"expected_start_time\": 1738416005000,\n    \"false_start_check\": true,\n    \"tracking_active\": true\n  }\n}"
+          "raw": "{\n  \"cmd\": \"CMD_START_MONITOR\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"expected_start_time\": 1738416005000,\n    \"false_start_check\": true,\n    \"tracking_active\": true,\n    \"countdown_seconds\": 3,\n    \"audio_plan\": \"START_321_GO\"\n  }\n}"
+        },
+        "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
+      }
+    },
+    {
+      "name": "CMD_RESET_ROUND",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"cmd\": \"CMD_RESET_ROUND\",\n  \"session_id\": \"RUN_TEST_001\",\n  \"node_id\": 1,\n  \"task_mode\": \"TRACK_RACE\",\n  \"config\": {\n    \"reason\": \"FALSE_START\"\n  }\n}"
         },
         "url": { "raw": "http://localhost:8100/commands", "protocol": "http", "host": ["localhost"], "port": "8100", "path": ["commands"] }
       }

@@ -1,0 +1,7 @@
+path: F:/datasets/coco8-pose/coco8-pose
+train: images/train
+val: images/val
+kpt_shape: [19, 3]
+flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15, 18, 17]
+names:
+  0: person

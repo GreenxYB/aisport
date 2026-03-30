@@ -14,7 +14,9 @@ from ultralytics.utils import IterableSimpleNamespace, YAML
 from ultralytics.utils.checks import check_yaml
 
 from ..core.config import get_settings
-from .algorithms.models.yolo_trt import TRTYOLO as YOLO
+from .algorithms.violation import extract_ultralytics_dets
+from .algorithms.lane_layout import available_lane_targets, build_lane_shapes
+from .algorithms.race_line import load_line_definition
 
 # 获取 logger 实例
 logger = logging.getLogger("edge.pipeline")
@@ -150,9 +152,18 @@ class Results:
                 cls=[self.cls[idx]],
                 keypoints=[self.keypoints[idx]]
             )
+        elif isinstance(idx, slice):
+            indices = list(range(len(self.confs)))[idx]
+            return Results(
+                orig_img=self.orig_img,
+                confs=self.confs[indices],
+                boxes=self.boxes[indices],
+                cls=self.cls[indices],
+                keypoints=[self.keypoints[i] for i in indices],
+            )
         elif isinstance(idx, (list, np.ndarray)):
             if len(idx) == 0:
-                # 空索引
+                # ?????
                 return Results(
                     orig_img=self.orig_img,
                     confs=np.array([]),
@@ -160,14 +171,20 @@ class Results:
                     cls=np.array([]),
                     keypoints=[]
                 )
-            
-            # 布尔掩码或整数索引数组
+
+            # ?????????????????
             try:
-                boxes = self.boxes[idx]
-                confs = self.confs[idx]
-                cls = self.cls[idx]
-                keypoints = [self.keypoints[i] for i in idx]
-                
+                idx_array = np.asarray(idx)
+                if idx_array.dtype == bool:
+                    selected_indices = np.flatnonzero(idx_array)
+                else:
+                    selected_indices = idx_array.astype(int)
+
+                boxes = self.boxes[selected_indices]
+                confs = self.confs[selected_indices]
+                cls = self.cls[selected_indices]
+                keypoints = [self.keypoints[i] for i in selected_indices.tolist()]
+
                 return Results(
                     orig_img=self.orig_img,
                     confs=confs,
@@ -176,7 +193,7 @@ class Results:
                     keypoints=keypoints
                 )
             except IndexError as e:
-                raise IndexError(f"Results.__getitem__ 中索引无效: {e}")
+                raise IndexError(f"Results.__getitem__ ???????? {e}")
         else:
             raise TypeError(f"索引必须是 int, slice 或 ndarray, 得到 {type(idx)}")
 
@@ -242,17 +259,16 @@ class VideoCaptureThread(threading.Thread):
     支持真实摄像头和模拟模式
     """
     
-    def __init__(self, source, frame_queue: Queue, width: int, height: int, fps: int):
-        """
-        初始化视频捕获线程
-        
-        Args:
-            source: 视频源,可以是设备索引、RTSP URL 或 None(模拟模式)
-            frame_queue: 帧队列,用于传递捕获的帧
-            width: 目标宽度
-            height: 目标高度
-            fps: 目标帧率
-        """
+    def __init__(
+        self,
+        source,
+        frame_queue: Queue,
+        width: int,
+        height: int,
+        fps: int,
+        on_running_change=None,
+        on_error=None,
+    ):
         super().__init__(daemon=True, name="CaptureThread")
         self.source = source
         self.frame_queue = frame_queue
@@ -263,22 +279,24 @@ class VideoCaptureThread(threading.Thread):
         self.cap = None
         self.timer = PipelineTimer()
         self.simulate = False
+        self.on_running_change = on_running_change
+        self.on_error = on_error
 
-        # 如果源为空,启用模拟模式
         if not source and source != 0:
             self.simulate = True
 
     def run(self):
-        """线程主函数 - 捕获视频帧"""
+        """Capture frames from a real or simulated source."""
         if self.simulate:
-            # 模拟模式:生成虚拟帧
-            logger.info("启动模拟视频捕获")
+            logger.info("Starting simulated video capture")
             self.running = True
+            if self.on_running_change:
+                self.on_running_change(True)
+            if self.on_error:
+                self.on_error(None)
             while self.running:
                 self.timer.start("1_capture")
-                # 生成黑色背景帧
                 frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-                # 添加时间戳文字
                 cv2.putText(
                     frame,
                     f"SIMULATION {time.time():.2f}",
@@ -297,61 +315,60 @@ class VideoCaptureThread(threading.Thread):
             self.frame_queue.put(None)
             return
 
-        # 真实摄像头模式
         try:
-            logger.info(f"打开视频源: {self.source}")
-            # 尝试将字符串数字转换为整数(设备索引)
+            logger.info("Opening video source: %s", self.source)
             src = self.source
             if isinstance(src, str) and src.isdigit():
                 src = int(src)
 
-            # Windows 平台使用 DirectShow 后端
-            if False:  # 如需 Windows 支持,改为: sys.platform == 'win32'
-                self.cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
-            else:
-                self.cap = cv2.VideoCapture(src)
+            self.cap = cv2.VideoCapture(src)
 
             if not self.cap.isOpened():
-                logger.error(f"无法打开视频源 {self.source}")
-                # 视频源打开失败时，不要立即退出，而是继续尝试
-                # 这样可以在网络恢复后重新连接
+                logger.error("Failed to open video source: %s", self.source)
+                if self.on_error:
+                    self.on_error(f"Failed to open camera source: {self.source}")
+                if self.on_running_change:
+                    self.on_running_change(False)
                 time.sleep(1.0)
                 return
 
-            # 设置视频参数
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             self.cap.set(cv2.CAP_PROP_FPS, self.fps_target)
 
             self.running = True
-            logger.info("开始捕获视频帧")
+            if self.on_running_change:
+                self.on_running_change(True)
+            if self.on_error:
+                self.on_error(None)
+            logger.info("Video capture started")
             while self.running:
                 self.timer.start("1_capture")
                 ret, frame = self.cap.read()
                 self.timer.end("1_capture")
 
                 if not ret:
-                    logger.warning("读取帧失败,重试中...")
+                    logger.warning("Frame read failed, retrying...")
                     time.sleep(0.1)
                     continue
 
-                # 队列满时丢弃帧以保持实时性
                 if not self.frame_queue.full():
                     self.frame_queue.put(frame)
         except Exception as e:
-            logger.error(f"捕获线程错误: {e}")
+            logger.error("Capture thread error: %s", e)
+            if self.on_error:
+                self.on_error(str(e))
         finally:
+            if self.on_running_change:
+                self.on_running_change(False)
             if self.cap:
                 self.cap.release()
-            # 无论是否正常停止，都放入 None 到队列，确保推理线程能够退出
             try:
                 self.frame_queue.put(None, block=False)
             except queue.Full:
-                # 队列已满，忽略
                 pass
 
     def stop(self):
-        """停止捕获线程"""
         self.running = False
 
 
@@ -380,6 +397,10 @@ class EdgePipeline:
         self.running = False
         self.timer = PipelineTimer()
         self.logger = logging.getLogger("edge.pipeline")
+        self._preview_lock = threading.Lock()
+        self._last_preview_frame: Optional[np.ndarray] = None
+        self._last_jpeg: Optional[bytes] = None
+        self._last_encode_error: Optional[str] = None
 
         # 创建处理队列,用于线程间数据传递
         self.capture_queue = Queue(maxsize=QUEUE_MAXSIZE)
@@ -390,7 +411,7 @@ class EdgePipeline:
         video_source = self.settings.rtsp_url or self.settings.camera_device
         if self.settings.simulate_camera:
             video_source = None  # 模拟模式
-        logger.info(f"视频源: {video_source}")
+        # logger.info(f"视频源: {video_source}")
 
         # 创建视频捕获线程
         self.capture_thread = VideoCaptureThread(
@@ -399,6 +420,8 @@ class EdgePipeline:
             self.settings.capture_width,
             self.settings.capture_height,
             self.settings.capture_fps,
+            on_running_change=self._set_capture_running,
+            on_error=self._set_capture_error,
         )
 
         # 创建工作线程
@@ -414,11 +437,19 @@ class EdgePipeline:
 
         # 模型和跟踪器初始化为 None,将在工作线程中加载
         self.model = None
+        self.model_kind = None
         self.tracker = None
 
         # 确定模型路径
         self.model_dir = Path(self.settings.model_dir)
-        self.model_path = str(self.model_dir / "yolo11n-pose.engine")
+        self.yolo_backend = self.settings.yolo_backend.lower()
+        self.engine_path = Path(self.settings.yolo_engine_path)
+        self.pt_path = Path(self.settings.yolo_pt_path)
+        if not self.engine_path.is_absolute():
+            self.engine_path = self.model_dir / self.engine_path
+        if not self.pt_path.is_absolute():
+            self.pt_path = self.model_dir / self.pt_path
+        self._capture_prev_ts_ms: Optional[int] = None
         
         # 加载 BYTETracker 配置文件
         try:
@@ -438,12 +469,103 @@ class EdgePipeline:
                 fuse_score=True,
             )
 
+    def _overlay_lane_guides(self, frame: np.ndarray) -> np.ndarray:
+        if not self.settings.display_lane_guides or frame is None or frame.size == 0:
+            return frame
+        state = getattr(self.algo_runner, "state", None)
+        bindings = getattr(state, "bindings", []) if state is not None else []
+        lane_count = 0
+        if state is not None:
+            lane_count = int(state.config.get("lane_count", 0) or 0)
+        target_lanes = available_lane_targets(
+            bindings,
+            lane_count,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
+        shapes = build_lane_shapes(
+            frame_width=frame.shape[1],
+            frame_height=frame.shape[0],
+            target_lanes=target_lanes,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
+        if not shapes:
+            return frame
+        annotated = frame.copy()
+        for shape in shapes:
+            lane = int(shape["lane"])
+            points = shape.get("points") or []
+            if len(points) >= 3:
+                pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(annotated, [pts], isClosed=True, color=(255, 255, 0), thickness=1)
+                label_x = int(points[0][0]) + 6
+                label_y = int(points[0][1]) + 22
+            else:
+                x1 = int(shape["x1"])
+                x2 = int(shape["x2"])
+                cv2.line(annotated, (x1, 0), (x1, annotated.shape[0] - 1), (255, 255, 0), 1)
+                cv2.line(annotated, (x2 - 1, 0), (x2 - 1, annotated.shape[0] - 1), (255, 255, 0), 1)
+                label_x = x1 + 6
+                label_y = 22
+            cv2.putText(
+                annotated,
+                f"L{lane}",
+                (label_x, label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+            )
+        return annotated
+
+    def _overlay_race_lines(self, frame: np.ndarray) -> np.ndarray:
+        if frame is None or frame.size == 0:
+            return frame
+        annotated = frame.copy()
+        role = str(self.settings.node_role or "").upper()
+
+        if self.settings.display_start_line and role in {"START", "ALL_IN_ONE"}:
+            start_line = load_line_definition(
+                frame_width=annotated.shape[1],
+                frame_height=annotated.shape[0],
+                line_file=self.settings.start_line_file,
+                fallback_y=int(self.settings.start_line_y),
+                line_name="start_line",
+            )
+            p1 = tuple(int(v) for v in start_line["p1"])
+            p2 = tuple(int(v) for v in start_line["p2"])
+            cv2.line(annotated, p1, p2, (0, 0, 255), 2)
+            cv2.putText(annotated, "START", (p1[0] + 8, max(24, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        if self.settings.display_finish_line and role in {"FINISH", "ALL_IN_ONE"}:
+            finish_line = load_line_definition(
+                frame_width=annotated.shape[1],
+                frame_height=annotated.shape[0],
+                line_file=self.settings.finish_line_file,
+                fallback_y=int(self.settings.finish_line_y),
+                line_name="finish_line",
+            )
+            p1 = tuple(int(v) for v in finish_line["p1"])
+            p2 = tuple(int(v) for v in finish_line["p2"])
+            cv2.line(annotated, p1, p2, (255, 0, 255), 2)
+            cv2.putText(annotated, "FINISH", (p1[0] + 8, max(24, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+
+        return annotated
+
     def start(self):
         """启动流水线所有线程"""
         if self.running:
             return
         self.logger.info("启动 EdgePipeline...")
         self.running = True
+        self._capture_prev_ts_ms = None
+        with self._preview_lock:
+            self._last_preview_frame = None
+            self._last_jpeg = None
+            self._last_encode_error = None
 
         # 清空队列中的残留数据
         while not self.capture_queue.empty():
@@ -554,6 +676,8 @@ class EdgePipeline:
                 self.settings.capture_width,
                 self.settings.capture_height,
                 self.settings.capture_fps,
+                on_running_change=self._set_capture_running,
+                on_error=self._set_capture_error,
             )
             # 重新创建工作线程
             self.inference_thread = threading.Thread(
@@ -574,94 +698,214 @@ class EdgePipeline:
         except Exception as e:
             self.logger.error(f"重新初始化线程资源时出错: {e}")
 
+    def _update_preview_cache(self, frame: np.ndarray) -> None:
+        preview = np.ascontiguousarray(frame)
+        try:
+            ok, buf = cv2.imencode(".jpg", preview)
+        except Exception as exc:
+            with self._preview_lock:
+                self._last_preview_frame = preview.copy()
+                self._last_encode_error = f"imencode_exception:{exc}"
+            return
+
+        with self._preview_lock:
+            self._last_preview_frame = preview.copy()
+            if ok:
+                self._last_jpeg = buf.tobytes()
+                self._last_encode_error = None
+            else:
+                self._last_encode_error = "imencode_failed"
+
+    def snapshot_jpeg(self) -> Optional[bytes]:
+        with self._preview_lock:
+            if self._last_jpeg:
+                return self._last_jpeg
+            if self._last_preview_frame is None:
+                return None
+            frame = self._last_preview_frame.copy()
+
+        try:
+            ok, buf = cv2.imencode(".jpg", np.ascontiguousarray(frame))
+        except Exception as exc:
+            with self._preview_lock:
+                self._last_encode_error = f"imencode_exception:{exc}"
+            return None
+
+        if not ok:
+            with self._preview_lock: 
+                self._last_encode_error = "imencode_failed"
+            return None
+
+        jpeg = buf.tobytes()
+        with self._preview_lock:
+            self._last_jpeg = jpeg
+            self._last_encode_error = None
+        return jpeg
+
+    def last_encode_error(self) -> Optional[str]:
+        with self._preview_lock:
+            return self._last_encode_error
+
+    def _empty_results(self, frame: np.ndarray) -> Results:
+        return Results(frame, np.array([]), np.empty((0, 4)), np.array([]), [])
+
+    def _load_model(self):
+        backend = self.yolo_backend
+
+        if backend == "trt":
+            if not self.engine_path.exists():
+                self.logger.warning("TRT engine not found: %s", self.engine_path)
+                return None, None
+            try:
+                from .algorithms.models.yolo_trt import TRTYOLO
+
+                model = TRTYOLO(str(self.engine_path))
+                self.logger.info("Loaded TRT model: %s", self.engine_path)
+                return model, "trt"
+            except Exception as exc:
+                self.logger.error("Failed to load TRT model: %s", exc)
+                return None, None
+
+        try:
+            from ultralytics import YOLO as UltralyticsYOLO
+        except Exception as exc:
+            self.logger.error("Failed to import ultralytics: %s", exc)
+            return None, None
+
+        model_path = self.pt_path
+        if not model_path.exists():
+            candidates = sorted(self.model_dir.glob("*.pt"))
+            if not candidates:
+                self.logger.warning("No YOLO .pt model found in %s", self.model_dir)
+                return None, None
+            model_path = candidates[0]
+
+        try:
+            model = UltralyticsYOLO(str(model_path))
+            self.logger.info("Loaded Ultralytics PT model: %s", model_path)
+            return model, "pt"
+        except Exception as exc:
+            self.logger.error("Failed to load Ultralytics model: %s", exc)
+            return None, None
+
+    def _infer_with_model(self, frame: np.ndarray) -> Results:
+        if self.model is None:
+            return self._empty_results(frame)
+
+        model_kind = getattr(self, "model_kind", self.yolo_backend)
+        if model_kind == "trt":
+            outputs = self.model.infer(
+                frame,
+                conf_thres=self.settings.yolo_conf_thres,
+                iou_thres=self.settings.yolo_iou_thres,
+            )
+            dets = outputs or []
+        else:
+            results = self.model.predict(
+                source=frame,
+                conf=self.settings.yolo_conf_thres,
+                iou=self.settings.yolo_iou_thres,
+                imgsz=self.settings.yolo_imgsz,
+                verbose=False,
+            )
+            dets = extract_ultralytics_dets(results[0]) if results else []
+
+        if not dets:
+            return self._empty_results(frame)
+
+        boxes = np.zeros((len(dets), 4), dtype=np.float32)
+        cls = []
+        confs = []
+        keypoints = []
+
+        for i, output in enumerate(dets):
+            x1, y1, x2, y2 = output["bbox"]
+            x = (x1 + x2) / 2
+            y = (y1 + y2) / 2
+            w = x2 - x1
+            h = y2 - y1
+            boxes[i] = [x, y, w, h]
+            cls.append(output.get("class_id", 0))
+            confs.append(output.get("score", 0.0) or 0.0)
+            keypoints.append(output.get("keypoints") or [])
+
+        return Results(frame, np.array(confs), boxes, np.array(cls), keypoints)
+
+    def _update_capture_stats(self) -> None:
+        state = getattr(self.algo_runner, "state", None)
+        if state is None:
+            return
+        now_ms = int(time.time() * 1000)
+        state.last_frame_ts = now_ms
+        if self._capture_prev_ts_ms is not None:
+            dt_ms = max(now_ms - self._capture_prev_ts_ms, 1)
+            fps = 1000.0 / dt_ms
+            prev = state.capture_fps_est
+            state.capture_fps_est = round(fps if prev is None else prev * 0.8 + fps * 0.2, 2)
+        self._capture_prev_ts_ms = now_ms
+
+    def _set_capture_running(self, running: bool) -> None:
+        state = getattr(self.algo_runner, "state", None)
+        if state is None:
+            return
+        state.capture_running = running
+        if not running:
+            state.capture_fps_est = None
+
+    def _set_capture_error(self, error: Optional[str]) -> None:
+        state = getattr(self.algo_runner, "state", None)
+        if state is None:
+            return
+        state.capture_error = error
+
     def _inference_worker(self):
         """
-        推理工作线程
-        
-        从捕获队列获取帧,使用 YOLO 模型进行姿态检测
-        将检测结果放入推理队列供跟踪线程使用
+        ?????????
+
+        ?????????????????YOLO ???????????????????????
         """
         local_model = None
         try:
-            # 在此线程中加载模型以确保正确的 CUDA 上下文
             if self.model is None:
-                try:
-                    self.logger.info(f"加载 TRT 模型: {self.model_path}")
-                    if Path(self.model_path).exists():
-                        local_model = YOLO(self.model_path)
-                        self.model = local_model  # 赋值给实例变量
-                        self.logger.info("TRT YOLO 模型加载成功")
-                    else:
-                        self.logger.warning(f"模型文件不存在: {self.model_path}")
-                except Exception as e:
-                    self.logger.error(f"加载 TRT 模型失败: {e}")
+                local_model, self.model_kind = self._load_model()
+                self.model = local_model
 
             start_time = time.time()
             while self.running:
                 try:
                     frame = self.capture_queue.get(timeout=1.0)
                 except queue.Empty:
-                    # 每10秒打印一次日志，确认线程还在运行
                     if time.time() - start_time > 10:
-                        self.logger.info("推理线程等待帧...")
+                        self.logger.info("Inference worker waiting for frames...")
                         start_time = time.time()
                     continue
 
                 if frame is None:
-                    self.logger.info("收到结束信号，退出推理线程")
+                    self.logger.info("Inference worker received shutdown sentinel")
                     self.inference_queue.put(None)
                     break
 
+                self._update_capture_stats()
                 self.timer.start("2_inference")
                 try:
-                    if self.model:
-                        # 执行模型推理
-                        outputs = self.model.infer(frame)
-                        # 转换输出格式为 Results
-                        boxes = np.zeros((len(outputs), 4), dtype=np.float32)
-                        cls = []
-                        confs = []
-                        keypoints = []
-
-                        for i, output in enumerate(outputs):
-                            x1, y1, x2, y2 = output["bbox"]
-                            # 转换为 xywh 格式
-                            x = (x1 + x2) / 2
-                            y = (y1 + y2) / 2
-                            w = x2 - x1
-                            h = y2 - y1
-                            boxes[i] = [x, y, w, h]
-                            cls.append(output["class_id"])
-                            confs.append(output["score"])
-                            if "keypoints" in output:
-                                keypoints.append(output["keypoints"])
-
-                        result = Results(
-                            frame, np.array(confs), boxes, np.array(cls), keypoints
-                        )
-                        self.inference_queue.put((frame, result))
-                    else:
-                        # 模型未加载,传递空结果
-                        self.inference_queue.put((frame, Results(frame, [], [], [], [])))
-
+                    result = self._infer_with_model(frame)
+                    self.inference_queue.put((frame, result))
                 except Exception as e:
-                    self.logger.error(f"推理错误: {e}")
-
+                    self.logger.error("Inference failed: %s", e)
+                    self.inference_queue.put((frame, self._empty_results(frame)))
                 finally:
                     self.timer.end("2_inference")
         finally:
-            # 在线程结束时清理模型资源
             if local_model is not None:
                 try:
-                    # 显式调用 YOLO 对象的 cleanup 方法清理 CUDA 资源
                     if hasattr(local_model, 'cleanup'):
                         local_model.cleanup()
-                    # 让垃圾回收器在当前线程中处理模型
                     local_model = None
                     self.model = None
-                    self.logger.info("推理线程模型资源清理完成")
+                    self.model_kind = None
+                    self.logger.info("Inference worker model cleanup finished")
                 except Exception as e:
-                    self.logger.warning(f"清理模型资源时出错: {e}")
+                    self.logger.warning("Model cleanup failed: %s", e)
 
     def _tracker_worker(self):
         """
@@ -738,12 +982,10 @@ class EdgePipeline:
 
     def _logic_worker(self):
         """
-        业务逻辑工作线程
-        
-        从跟踪队列获取跟踪结果,调用算法运行器进行处理
-        负责可视化显示和性能统计
+        ????????????
+
+        ?????????????????????????????????????????
         """
-        # 简化逻辑，减少日志输出
         fps = 0.0
         prev_time = time.time()
         frame_count = 0
@@ -761,7 +1003,6 @@ class EdgePipeline:
             frame, tracker_result = item
             frame_count += 1
 
-            # 计算 FPS
             curr_time = time.time()
             dt = curr_time - prev_time
             if dt > 0:
@@ -769,66 +1010,52 @@ class EdgePipeline:
             prev_time = curr_time
 
             self.timer.start("4_business_logic")
-
-            # 调用算法运行器处理跟踪结果
             if self.algo_runner:
                 if hasattr(self.algo_runner, "process_pipeline_result"):
                     self.algo_runner.process_pipeline_result(
                         frame, tracker_result, curr_time * 1000
                     )
                 else:
-                    # 回退到旧的帧处理方法
                     self.algo_runner.process_frame(frame, curr_time * 1000)
-
             self.timer.end("4_business_logic")
 
-            # 可视化显示 - 优化版本
-            if self.settings.display_preview:
-                while self.running:
-                    # 每2帧更新一次窗口，减少窗口更新频率
-                    if frame_count % 2 == 0:
-                        self.timer.start("5_drawing")
-                        try:
-                            annotated_frame = tracker_result.draw()
-                            # 绘制 FPS
-                            cv2.putText(
-                                annotated_frame,
-                                f"FPS: {fps:.1f}",
-                                (annotated_frame.shape[1] - 150, 40),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.9,
-                                (0, 255, 0),
-                                2,
-                            )
+            self.timer.start("5_drawing")
+            try:
+                annotated_frame = tracker_result.draw()
+                annotated_frame = self._overlay_lane_guides(annotated_frame)
+                annotated_frame = self._overlay_race_lines(annotated_frame)
+                cv2.putText(
+                    annotated_frame,
+                    f"FPS: {fps:.1f}",
+                    (annotated_frame.shape[1] - 150, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (0, 255, 0),
+                    2,
+                )
 
-                            # 镜像显示(如果需要)
-                            if self.settings.display_mirror:
-                                annotated_frame = cv2.flip(annotated_frame, 1)
+                if self.settings.display_mirror:
+                    annotated_frame = cv2.flip(annotated_frame, 1)
 
-                            # 确保窗口正确创建和调整大小
-                            if not window_created:
-                                # 确保所有窗口已关闭
-                                cv2.destroyAllWindows()
-                                # 创建新窗口
-                                cv2.namedWindow("Edge Node Preview", cv2.WINDOW_NORMAL)
-                                cv2.resizeWindow("Edge Node Preview", 1280, 720)
-                                window_created = True
+                self._update_preview_cache(annotated_frame)
 
-                            # 使用非阻塞显示
-                            cv2.imshow("Edge Node Preview", annotated_frame)
-                            # 非阻塞的 waitKey，只处理键盘事件，不等待
-                            key = cv2.waitKey(1) & 0xFF
-                            if key == 27:  # ESC 键退出
-                                self.stop()
-                        except Exception as e:
-                            # 只记录错误，不打印详细信息
-                            pass
-                        finally:
-                            self.timer.end("5_drawing")
-        
-        # 退出线程时关闭窗口
+                if self.settings.display_preview:
+                    if not window_created:
+                        cv2.destroyAllWindows()
+                        cv2.namedWindow("Edge Node Preview", cv2.WINDOW_NORMAL)
+                        cv2.resizeWindow("Edge Node Preview", 1280, 720)
+                        window_created = True
+
+                    cv2.imshow("Edge Node Preview", annotated_frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == 27:
+                        self.stop()
+            except Exception as e:
+                self.logger.debug("preview draw failed: %s", e)
+            finally:
+                self.timer.end("5_drawing")
+
         try:
             cv2.destroyAllWindows()
-        except Exception as e:
-            # 只记录错误，不打印详细信息
+        except Exception:
             pass

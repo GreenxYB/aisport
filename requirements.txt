@@ -7,3 +7,4 @@ opencv-python
 numpy
 baidu-aip
 ultralytics
+websockets

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from .routers import health, commands, status, preview
+from .routers import health, commands, status, preview, face
 
 
 def _setup_logging() -> None:
@@ -31,13 +31,26 @@ def create_app() -> FastAPI:
     app.include_router(commands.router, prefix="/commands", tags=["commands"])
     app.include_router(status.router, prefix="/status", tags=["status"])
     app.include_router(preview.router, prefix="/preview", tags=["preview"])
+    app.include_router(face.router, prefix="/face", tags=["face"])
 
     @app.on_event("startup")
     def _startup() -> None:
         # Initialize handler on startup to auto-open camera
         from .routers.commands import get_handler
+        from .services.ws_client import get_ws_client
 
-        get_handler()
+        handler = get_handler()
+        if handler.settings.ws_enabled:
+            get_ws_client(handler).start()
+
+    @app.on_event("shutdown")
+    def _shutdown() -> None:
+        from .routers.commands import get_handler
+        from .services.ws_client import get_ws_client
+
+        handler = get_handler()
+        if handler.settings.ws_enabled:
+            get_ws_client(handler).stop()
 
     return app
 

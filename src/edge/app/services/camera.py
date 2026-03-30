@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -11,6 +12,8 @@ except ImportError as exc:
     raise ImportError("opencv-python-headless is required for camera capture") from exc
 
 from ..core.config import get_settings
+from ..core.state import NodeState
+from .algorithms.lane_layout import available_lane_targets, build_lane_shapes
 
 
 FrameCallback = Callable[[np.ndarray, float], None]  # frame, ts_ms
@@ -22,6 +25,9 @@ class CameraSource:
         self.log = logging.getLogger("edge.camera")
         self.cap: Optional[cv2.VideoCapture] = None
         self.simulate = self.settings.simulate_camera
+        self._video_files: list[Path] = []
+        self._video_index = 0
+        self._video_dir_mode = False
 
     def open(self) -> None:
         if self.simulate:
@@ -34,7 +40,19 @@ class CameraSource:
             # Prefer DirectShow on Windows for more stable webcam open
             self.cap = cv2.VideoCapture(source_idx, cv2.CAP_DSHOW)
         else:
-            self.cap = cv2.VideoCapture(source)
+            src_path = Path(str(source))
+            if src_path.exists() and src_path.is_dir():
+                self._video_files = sorted(
+                    p for p in src_path.rglob("*") if p.suffix.lower() in {".mp4", ".avi", ".mov", ".mkv"}
+                )
+                if not self._video_files:
+                    raise RuntimeError(f"No video files found in directory: {source}")
+                self._video_dir_mode = True
+                self._video_index = 0
+                self.cap = cv2.VideoCapture(str(self._video_files[self._video_index]))
+                self.log.info("Camera directory mode enabled (%s files)", len(self._video_files))
+            else:
+                self.cap = cv2.VideoCapture(source)
         if not self.cap.isOpened():
             raise RuntimeError(f"Failed to open camera source: {source}")
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.capture_width)
@@ -56,7 +74,21 @@ class CameraSource:
         if not self.cap:
             return False, None, None
         ok, frame = self.cap.read()
+        if not ok and self._video_dir_mode:
+            while True:
+                self._video_index += 1
+                if self._video_index >= len(self._video_files):
+                    self._video_index = 0
+                self.cap.release()
+                self.cap = cv2.VideoCapture(str(self._video_files[self._video_index]))
+                ok, frame = self.cap.read()
+                if ok or not self._video_files:
+                    break
         ts_ms = time.time() * 1000
+        if ok and frame is not None:
+            target_w, target_h = self.settings.capture_width, self.settings.capture_height
+            if frame.shape[1] != target_w or frame.shape[0] != target_h:
+                frame = cv2.resize(frame, (target_w, target_h))
         return ok, frame if ok else None, ts_ms if ok else None
 
     def close(self) -> None:
@@ -67,9 +99,10 @@ class CameraSource:
 
 
 class CaptureManager:
-    def __init__(self, on_frame: FrameCallback):
+    def __init__(self, on_frame: FrameCallback, state: Optional[NodeState] = None):
         self.settings = get_settings()
         self.on_frame = on_frame
+        self.state = state
         self.camera = CameraSource()
         self.log = logging.getLogger("edge.capture")
         self._thread: Optional[threading.Thread] = None
@@ -81,6 +114,38 @@ class CaptureManager:
         self._display_thread: Optional[threading.Thread] = None
         self._last_frame: Optional[np.ndarray] = None
         self._last_preview_frame: Optional[np.ndarray] = None
+        self._style = self._build_style()
+
+    @staticmethod
+    def _parse_bgr(text: str, default: tuple[int, int, int]) -> tuple[int, int, int]:
+        try:
+            parts = [int(x.strip()) for x in str(text).split(",")]
+            if len(parts) != 3:
+                return default
+            return (
+                max(0, min(255, parts[0])),
+                max(0, min(255, parts[1])),
+                max(0, min(255, parts[2])),
+            )
+        except Exception:
+            return default
+
+    def _build_style(self) -> dict:
+        return {
+            "line_color": self._parse_bgr(self.settings.viz_line_color, (0, 0, 255)),
+            "ready_color": self._parse_bgr(self.settings.viz_ready_color, (0, 255, 0)),
+            "alert_color": self._parse_bgr(self.settings.viz_alert_color, (0, 0, 255)),
+            "box_color": self._parse_bgr(self.settings.viz_box_color, (0, 255, 0)),
+            "toe_ankle_color": self._parse_bgr(self.settings.viz_toe_ankle_color, (255, 0, 0)),
+            "toe_color": self._parse_bgr(self.settings.viz_toe_color, (0, 255, 255)),
+            "font_scale": float(self.settings.viz_hud_font_scale),
+            "font_thickness": int(self.settings.viz_hud_font_thickness),
+            "line_thickness": int(self.settings.viz_line_thickness),
+            "box_thickness": int(self.settings.viz_box_thickness),
+            "toe_ankle_radius": int(self.settings.viz_toe_ankle_radius),
+            "toe_radius": int(self.settings.viz_toe_radius),
+            "toe_link_thickness": int(self.settings.viz_toe_link_thickness),
+        }
 
     def start(self, raise_on_fail: bool = False) -> bool:
         if self._running.is_set():
@@ -118,6 +183,19 @@ class CaptureManager:
                     preview = frame
                     if self.settings.display_mirror:
                         preview = cv2.flip(frame, 1)
+                    if self.settings.display_start_line:
+                        if preview is frame:
+                            preview = preview.copy()
+                        line_y = int(self.settings.start_line_y * preview.shape[0] / 640)
+                        cv2.line(
+                            preview,
+                            (0, line_y),
+                            (preview.shape[1] - 1, line_y),
+                            self._style["line_color"],
+                            self._style["line_thickness"],
+                        )
+                    self._overlay_lane_guides(preview)
+                    self._overlay_false_start(preview)
                     # Encode frame for preview
                     ret, buf = cv2.imencode(".jpg", preview)
                     if ret:
@@ -208,3 +286,190 @@ class CaptureManager:
                 cv2.destroyAllWindows()
             except Exception:
                 pass
+
+    def _overlay_false_start(self, preview: np.ndarray) -> None:
+        if not self.state:
+            return
+        debug_payload = self.state.last_toe_proxy_debug
+        debug_ts = self.state.last_toe_proxy_ts
+        if debug_payload and debug_ts and int(time.time() * 1000) - int(debug_ts) <= 500:
+            items = debug_payload.get("items", [])
+            for item in items:
+                bbox = item.get("bbox")
+                if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+                    x1, y1, x2, y2 = map(int, bbox[:4])
+                    cv2.rectangle(
+                        preview, (x1, y1), (x2, y2), self._style["box_color"], self._style["box_thickness"]
+                    )
+                toe_points = item.get("toe_proxy_points")
+                if not isinstance(toe_points, list):
+                    continue
+                for point in toe_points:
+                    ankle = point.get("ankle")
+                    toe = point.get("toe")
+                    if isinstance(ankle, list) and len(ankle) >= 2:
+                        cv2.circle(
+                            preview,
+                            (int(ankle[0]), int(ankle[1])),
+                            self._style["toe_ankle_radius"],
+                            self._style["toe_ankle_color"],
+                            -1,
+                        )
+                    if isinstance(toe, list) and len(toe) >= 2:
+                        cv2.circle(
+                            preview,
+                            (int(toe[0]), int(toe[1])),
+                            self._style["toe_radius"],
+                            self._style["toe_color"],
+                            -1,
+                        )
+                    if (
+                        isinstance(ankle, list)
+                        and len(ankle) >= 2
+                        and isinstance(toe, list)
+                        and len(toe) >= 2
+                    ):
+                        cv2.line(
+                            preview,
+                            (int(ankle[0]), int(ankle[1])),
+                            (int(toe[0]), int(toe[1])),
+                            self._style["toe_color"],
+                            self._style["toe_link_thickness"],
+                        )
+        event = self.state.last_false_start_event
+        ts = self.state.last_false_start_ts
+        if not event or not ts:
+            return
+        if int(time.time() * 1000) - int(ts) > 2000:
+            return
+        bbox = event.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+            x1, y1, x2, y2 = map(int, bbox[:4])
+            cv2.rectangle(
+                preview,
+                (x1, y1),
+                (x2, y2),
+                self._style["alert_color"],
+                self._style["line_thickness"],
+            )
+        kps = event.get("keypoints")
+        if kps and len(kps) >= 17:
+            for idx in (15, 16):
+                try:
+                    x, y, s = kps[idx]
+                except Exception:
+                    continue
+                if s is not None and s >= self.settings.kps_conf_thres:
+                    cv2.circle(
+                        preview,
+                        (int(x), int(y)),
+                        self._style["toe_radius"],
+                        self._style["alert_color"],
+                        -1,
+                    )
+        toe_points = event.get("toe_proxy_points")
+        if isinstance(toe_points, list):
+            for point in toe_points:
+                ankle = point.get("ankle")
+                toe = point.get("toe")
+                if isinstance(ankle, list) and len(ankle) >= 2:
+                    cv2.circle(
+                        preview,
+                        (int(ankle[0]), int(ankle[1])),
+                        self._style["toe_ankle_radius"],
+                        self._style["toe_ankle_color"],
+                        -1,
+                    )
+                if isinstance(toe, list) and len(toe) >= 2:
+                    cv2.circle(
+                        preview,
+                        (int(toe[0]), int(toe[1])),
+                        self._style["toe_radius"],
+                        self._style["toe_color"],
+                        -1,
+                    )
+                if (
+                    isinstance(ankle, list)
+                    and len(ankle) >= 2
+                    and isinstance(toe, list)
+                    and len(toe) >= 2
+                ):
+                    cv2.line(
+                        preview,
+                        (int(ankle[0]), int(ankle[1])),
+                        (int(toe[0]), int(toe[1])),
+                        self._style["toe_color"],
+                        self._style["toe_link_thickness"],
+                    )
+        lane = event.get("lane")
+        label = f"FALSE START" if lane is None else f"FALSE START L{lane}"
+        cv2.putText(
+            preview,
+            label,
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            self._style["font_scale"],
+            self._style["alert_color"],
+            self._style["font_thickness"],
+            cv2.LINE_AA,
+        )
+
+    def _overlay_lane_guides(self, preview: np.ndarray) -> None:
+        if not self.settings.display_lane_guides or preview is None or preview.size == 0:
+            return
+        lane_count = int(self.state.config.get("lane_count", 0) or 0) if self.state else 0
+        bindings = self.state.bindings if self.state else []
+        target_lanes = available_lane_targets(
+            bindings,
+            lane_count,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
+        shapes = build_lane_shapes(
+            frame_width=preview.shape[1],
+            frame_height=preview.shape[0],
+            target_lanes=target_lanes,
+            lane_ranges_text=self.settings.lane_x_ranges,
+            lane_polygons_text=self.settings.lane_polygons,
+            lane_layout_file=self.settings.lane_layout_file,
+        )
+        if not shapes:
+            return
+        for shape in shapes:
+            lane = int(shape["lane"])
+            points = shape.get("points") or []
+            if len(points) >= 3:
+                pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(preview, [pts], isClosed=True, color=self._style["line_color"], thickness=1)
+                label_x = int(points[0][0]) + 6
+                label_y = int(points[0][1]) + 22
+            else:
+                x1 = int(shape["x1"])
+                x2 = int(shape["x2"])
+                cv2.line(
+                    preview,
+                    (x1, 0),
+                    (x1, preview.shape[0] - 1),
+                    self._style["line_color"],
+                    1,
+                )
+                cv2.line(
+                    preview,
+                    (x2 - 1, 0),
+                    (x2 - 1, preview.shape[0] - 1),
+                    self._style["line_color"],
+                    1,
+                )
+                label_x = x1 + 6
+                label_y = 22
+            cv2.putText(
+                preview,
+                f"L{lane}",
+                (label_x, label_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                self._style["ready_color"],
+                2,
+                cv2.LINE_AA,
+            )
