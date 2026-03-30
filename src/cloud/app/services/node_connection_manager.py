@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -9,6 +10,7 @@ from common.protocol import CommandPayload, FinishReport, NodeConnectPayload, No
 
 class NodeConnectionManager:
     def __init__(self) -> None:
+        self._logger = logging.getLogger("cloud.node_manager")
         self._lock = asyncio.Lock()
         self._connections: dict[int, WebSocket] = {}
         self._meta: dict[int, dict[str, Any]] = {}
@@ -20,6 +22,7 @@ class NodeConnectionManager:
         self._id_reports_by_session: dict[str, list[dict[str, Any]]] = {}
         self._violations_by_session: dict[str, list[dict[str, Any]]] = {}
         self._finishes_by_session: dict[str, list[dict[str, Any]]] = {}
+        self._status_log_ts: dict[int, float] = {}
 
     async def register(self, websocket: WebSocket, payload: NodeConnectPayload) -> None:
         async with self._lock:
@@ -32,6 +35,12 @@ class NodeConnectionManager:
                 "connected_at": self._now_iso(),
                 "online": True,
             }
+        self._logger.info(
+            "node connected node_id=%s role=%s site=%s",
+            payload.node_id,
+            payload.node_role,
+            payload.site_id,
+        )
 
     async def unregister(self, node_id: int) -> None:
         async with self._lock:
@@ -40,6 +49,7 @@ class NodeConnectionManager:
             if meta is not None:
                 meta["online"] = False
                 meta["disconnected_at"] = self._now_iso()
+        self._logger.warning("node disconnected node_id=%s", node_id)
 
     async def update_status(self, report: NodeStatusReport) -> None:
         async with self._lock:
@@ -49,22 +59,52 @@ class NodeConnectionManager:
                 "data": report.data,
                 "updated_at": self._now_iso(),
             }
+        now = datetime.now(timezone.utc).timestamp()
+        last = self._status_log_ts.get(report.node_id, 0.0)
+        if now - last >= 10:
+            self._status_log_ts[report.node_id] = now
+            self._logger.info(
+                "node status heartbeat node_id=%s session=%s stage=%s phase=%s",
+                report.node_id,
+                report.session_id,
+                report.data.get("session_stage"),
+                report.data.get("phase"),
+            )
 
     async def record_violation(self, report: ViolationReport) -> None:
         async with self._lock:
             payload = report.model_dump()
             self._last_violation[report.node_id] = payload
             self._violations_by_session.setdefault(report.session_id, []).append(payload)
+        self._logger.info(
+            "violation recorded node_id=%s session=%s count=%s",
+            report.node_id,
+            report.session_id,
+            len(report.data),
+        )
 
     async def record_finish(self, report: FinishReport) -> None:
         async with self._lock:
             payload = report.model_dump()
             self._last_finish[report.node_id] = payload
             self._finishes_by_session.setdefault(report.session_id, []).append(payload)
+        self._logger.info(
+            "finish recorded node_id=%s session=%s count=%s",
+            report.node_id,
+            report.session_id,
+            len(report.data),
+        )
 
     async def record_ack(self, ack: dict[str, Any]) -> None:
         async with self._lock:
             self._last_ack[int(ack["node_id"])] = ack
+        self._logger.info(
+            "command ack node_id=%s session=%s cmd=%s status=%s",
+            ack.get("node_id"),
+            ack.get("session_id"),
+            ack.get("cmd"),
+            ack.get("status"),
+        )
 
     async def record_id_report(self, report: dict[str, Any]) -> None:
         async with self._lock:

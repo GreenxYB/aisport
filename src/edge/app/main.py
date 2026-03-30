@@ -8,7 +8,7 @@ from .routers import health, commands, status, preview, face
 
 
 def _setup_logging() -> None:
-    root = Path(__file__).resolve().parents[4]
+    root = Path(__file__).resolve().parents[3]
     log_dir = root / "logs"
     os.makedirs(log_dir, exist_ok=True)
     log_file = log_dir / "edge.log"

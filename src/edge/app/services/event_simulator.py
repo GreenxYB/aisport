@@ -1,4 +1,5 @@
 import json
+import logging
 import queue
 import random
 import threading
@@ -16,6 +17,7 @@ class EventSimulator:
         self.settings = get_settings()
         self.state = state
         self.publisher = publisher
+        self.logger = logging.getLogger("edge.event_sim")
         self._thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._log_path = Path(__file__).resolve().parents[4] / "logs" / "events.jsonl"
@@ -23,11 +25,19 @@ class EventSimulator:
         self._retry_queue: "queue.Queue[dict]" = queue.Queue()
         self._retry_thread: Optional[threading.Thread] = None
         self._retry_running = threading.Event()
+        self._last_report_fail_log_ts: float = 0.0
+        self._report_fail_count = 0
 
     def start(self, session_id: str, lane_count: int) -> None:
         if self._running.is_set():
             return
         self._running.set()
+        self.logger.info(
+            "event simulator started session=%s lane_count=%s interval=%.2fs",
+            session_id,
+            lane_count,
+            self.settings.event_interval_sec,
+        )
         self._thread = threading.Thread(
             target=self._loop, args=(session_id, lane_count), daemon=True, name="event-sim"
         )
@@ -42,6 +52,7 @@ class EventSimulator:
         if self._thread:
             self._thread.join(timeout=2)
         self._stop_retry_worker()
+        self.logger.info("event simulator stopped")
 
     def _loop(self, session_id: str, lane_count: int) -> None:
         interval = max(self.settings.event_interval_sec, 0.5)
@@ -108,6 +119,16 @@ class EventSimulator:
             self.state.reports_sent += 1
             return
         self.state.reports_failed += 1
+        self._report_fail_count += 1
+        now = time.time()
+        if now - self._last_report_fail_log_ts >= 5:
+            self._last_report_fail_log_ts = now
+            self.logger.warning(
+                "event report failed msg_type=%s fail_count=%s retry_enabled=%s",
+                event.get("msg_type"),
+                self._report_fail_count,
+                self.settings.report_retry_enabled,
+            )
         if self.settings.report_retry_enabled:
             self._retry_queue.put({"event": event, "attempt": 1})
         self._append_failed(event, Exception("report_failed"))
@@ -142,6 +163,11 @@ class EventSimulator:
         if self._retry_running.is_set():
             return
         self._retry_running.set()
+        self.logger.info(
+            "event retry worker started interval=%.2fs max_attempts=%s",
+            self.settings.report_retry_interval_sec,
+            self.settings.report_retry_max,
+        )
         self._retry_thread = threading.Thread(
             target=self._retry_loop, daemon=True, name="event-retry"
         )
@@ -153,6 +179,7 @@ class EventSimulator:
         self._retry_running.clear()
         if self._retry_thread:
             self._retry_thread.join(timeout=2)
+        self.logger.info("event retry worker stopped")
 
     def _retry_loop(self) -> None:
         interval = max(self.settings.report_retry_interval_sec, 1.0)
@@ -173,4 +200,9 @@ class EventSimulator:
                 self._retry_queue.put(item)
             else:
                 self.state.reports_failed += 1
+                self.logger.error(
+                    "event retry exhausted msg_type=%s attempts=%s",
+                    event.get("msg_type") if isinstance(event, dict) else None,
+                    attempt,
+                )
                 self._append_failed(event, Exception("retry_exhausted"))

@@ -43,55 +43,50 @@ class _NoopPipeline:
 
 class CommandHandler:
     """
-    鍛戒护澶勭悊鍣?- 澶勭悊鏉ヨ嚜浜戠鐨勬帶鍒跺懡浠?
+    Handle Cloud->Edge commands and maintain edge node runtime state.
 
-    璐熻矗绠＄悊杈圭紭璁惧鐨勭敓鍛藉懆鏈?
-    - 鍒濆鍖栦細璇?(CMD_INIT)
-    - 鍚屾缁戝畾淇℃伅 (CMD_BINDING_SYNC)
-    - 寮€濮嬬洃鎺?(CMD_START_MONITOR)
-    - 鍋滄鐩戞帶 (CMD_STOP)
-    - 蹇冭烦妫€娴?(CMD_HEARTBEAT)
+    Main transitions:
+    - CMD_INIT: reset round/session runtime
+    - CMD_BINDING_SYNC: sync lane/student bindings
+    - CMD_START_MONITOR: enter monitoring and start capture
+    - CMD_STOP: stop current round
+    - CMD_RESET_ROUND: reset to binding stage for rerun
     """
 
     def __init__(self):
-        """鍒濆鍖栧懡浠ゅ鐞嗗櫒"""
+        """Initialize command processor and runtime dependencies."""
         self.settings = get_settings()
-        # 鐘舵€佹枃浠惰矾寰?- 鐢ㄤ簬鎸佷箙鍖栬妭鐐圭姸鎬?
+        # Persisted runtime state snapshot for quick restart recovery.
         self.state_file = Path(__file__).resolve().parents[4] / "logs" / "state.json"
-        # 鍔犺浇鎴栧垱寤哄垵濮嬬姸鎬?
         self.state = self._load_state()
         self.logger = logging.getLogger("edge.command")
         self.publisher = NullPublisher()
 
-        # 鍒濆鍖栦簨浠舵ā鎷熷櫒 - 鐢ㄤ簬娴嬭瘯鐢熸垚妯℃嫙浜嬩欢
+        # Event generator for simulation/debug mode.
         self.event_sim = EventSimulator(self.state, publisher=self.publisher)
-        # 鍒濆鍖栫畻娉曡繍琛屽櫒 - 澶勭悊瑙嗛甯у苟妫€娴嬩簨浠?
+        # Domain logic runner (face binding / false start / finish line).
         self.algo = AlgorithmRunner(self.state, publisher=self.publisher)
 
-        # 浣跨敤 EdgePipeline 杩涜澶氱嚎绋嬭棰戝鐞?
-        # 鍖呭惈: 瑙嗛閲囬泦 -> YOLO鎺ㄧ悊 -> 鐩爣璺熻釜 -> 涓氬姟閫昏緫
+        # Capture -> inference -> tracker -> business logic pipeline.
         if EdgePipeline is None:
             self.pipeline = _NoopPipeline()
             self.logger.warning("EdgePipeline unavailable, falling back to no-op pipeline: %s", PIPELINE_IMPORT_ERROR)
         else:
             self.pipeline = EdgePipeline(algo_runner=self.algo)
 
-        # 濡傛灉閰嶇疆浜嗚嚜鍔ㄥ惎鍔ㄩ噰闆?鍒欏惎鍔ㄨ棰戝鐞嗙閬?
         if self.settings.auto_start_capture:
             self.pipeline.start()
             self.state.capture_running = self.pipeline.running
-            self.logger.info(f"鑷姩鍚姩閲囬泦: 绠￠亾杩愯鐘舵€?{self.pipeline.running}")
+            self.logger.info("capture auto-start finished running=%s", self.pipeline.running)
 
-        # 瀹氫箟鍏佽鐨勫懡浠ら泦鍚?
         self.allowed_cmds = {
-            "CMD_INIT",  # 鍒濆鍖栦細璇?
-            "CMD_BINDING_SYNC",  # 鍚屾杩愬姩鍛樼粦瀹氫俊鎭?
-            "CMD_START_MONITOR",  # 寮€濮嬬洃鎺?妫€娴?
-            "CMD_STOP",  # 鍋滄鐩戞帶
-            "CMD_RESET_ROUND",  # 杩濊鍚庨噸缃綋鍓嶈疆娆?
-            "CMD_HEARTBEAT",  # 蹇冭烦妫€娴?
+            "CMD_INIT",
+            "CMD_BINDING_SYNC",
+            "CMD_START_MONITOR",
+            "CMD_STOP",
+            "CMD_RESET_ROUND",
+            "CMD_HEARTBEAT",
         }
-        # 鍛戒护鍒嗗彂鏄犲皠琛?- 灏嗗懡浠ゆ槧灏勫埌瀵瑰簲鐨勫鐞嗘柟娉?
         self._dispatch_map: dict[str, Callable[[CommandPayload], None]] = {
             "CMD_INIT": self._handle_init,
             "CMD_BINDING_SYNC": self._handle_binding_sync,
@@ -102,22 +97,12 @@ class CommandHandler:
         }
 
     def handle(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊鎺ユ敹鍒扮殑鍛戒护
-
-        Args:
-            payload: 鍛戒护璐熻浇,鍖呭惈鍛戒护绫诲瀷銆佷細璇滻D銆佽妭鐐笽D鍜岄厤缃俊鎭?
-
-        Raises:
-            HTTPException: 褰撳懡浠や笉鏀寔鏃惰繑鍥?00閿欒
-        """
+        """Dispatch one command and persist updated edge state."""
         started = time.time()
-        # 妫€鏌ュ懡浠ゆ槸鍚﹀湪鍏佽鍒楄〃涓?
         if payload.cmd not in self.allowed_cmds:
-            self.logger.warning("鏈煡鍛戒护 %s", payload.cmd)
-            raise HTTPException(status_code=400, detail="涓嶆敮鎸佺殑鍛戒护")
+            self.logger.warning("unsupported command cmd=%s session=%s node=%s", payload.cmd, payload.session_id, payload.node_id)
+            raise HTTPException(status_code=400, detail="unsupported command")
 
-        # 鑾峰彇瀵瑰簲鐨勫懡浠ゅ鐞嗗櫒
         handler = self._dispatch_map[payload.cmd]
         self.logger.info(
             "cmd=%s session=%s node=%s summary=%s",
@@ -127,12 +112,9 @@ class CommandHandler:
             self._summarize_command(payload),
         )
 
-        # 鎵ц鍛戒护澶勭悊
         handler(payload)
-        # 鎸佷箙鍖栫姸鎬佸埌鏂囦欢
         self._persist_state()
 
-        # 璁板綍澶勭悊鑰楁椂
         elapsed_ms = int((time.time() - started) * 1000)
         self.logger.info(
             "handled cmd=%s phase=%s elapsed_ms=%s",
@@ -141,23 +123,12 @@ class CommandHandler:
             elapsed_ms,
         )
 
-    # ==================== 鍛戒护澶勭悊鍣?====================
-
     def _handle_init(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊鍒濆鍖栧懡浠?- 閲嶇疆鎵€鏈夌姸鎬?
-
-        褰撲細璇濆彉鍖栨椂,閲嶇疆鎵€鏈夌姸鎬佷互寮€濮嬫柊鐨勬瘮璧涗細璇?
-        """
-        # 璁剧疆浼氳瘽ID
+        """Reset runtime state and enter binding phase."""
         self.state.session_id = payload.session_id
-        # 杩涘叆缁戝畾闃舵 - 绛夊緟杩愬姩鍛樹俊鎭粦瀹?
         self.state.phase = NodePhase.BINDING
-        # 淇濆瓨閰嶇疆淇℃伅
         self.state.config = payload.config or {}
-        # 娓呯┖杩愬姩鍛樼粦瀹氬垪琛?
         self.state.bindings = []
-        # 閲嶇疆鍚勭鐘舵€佸瓧娈?
         self.state.expected_start_time = None
         self.state.stop_reason = None
         self.state.events_generated = 0
@@ -171,53 +142,41 @@ class CommandHandler:
         self.state.last_face_result = None
         self.state.last_face_ts = None
         self.algo.reset_binding_runtime()
-        # 鍋滄浜嬩欢妯℃嫙
         self.event_sim.stop()
         self._touch(payload.cmd)
+        self.logger.info(
+            "state reset done session=%s lane_count=%s phase=%s",
+            self.state.session_id,
+            self.state.config.get("lane_count"),
+            self.state.phase.value,
+        )
 
     def _handle_binding_sync(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊缁戝畾鍚屾鍛戒护 - 鍚屾杩愬姩鍛樹笌璺戦亾鐨勭粦瀹氫俊鎭?
-
-        鍦ㄦ瘮璧涘紑濮嬪墠,灏嗚繍鍔ㄥ憳ID涓庤窇閬撶紪鍙疯繘琛岀粦瀹?
-        """
-        # 楠岃瘉浼氳瘽涓€鑷存€?
+        """Sync lane bindings before monitoring starts."""
         self._ensure_same_session(payload)
-        # 楠岃瘉褰撳墠闃舵蹇呴』鏄疊INDING闃舵
         self._ensure_phase([NodePhase.BINDING])
 
-        # 鑾峰彇缁戝畾淇℃伅
         bindings = payload.config.get("bindings") if payload.config else None
         self.state.bindings = bindings or []
-        # 淇濇寔鍦˙INDING闃舵,绛夊緟寮€濮嬬洃鎺у懡浠?
         self.state.phase = NodePhase.BINDING
         self.algo.reset_binding_runtime()
 
-        # 濡傛灉鍚敤浜嗕簨浠舵ā鎷?鍚姩妯℃嫙鍣?
         if self.settings.simulate_events:
             lane_count = int(self.state.config.get("lane_count", 1) or 1)
             self.event_sim.start(self.state.session_id or "UNKNOWN", lane_count)
         self._touch(payload.cmd)
+        self.logger.info("binding synced count=%s session=%s", len(self.state.bindings), self.state.session_id)
 
     def _handle_start_monitor(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊寮€濮嬬洃鎺у懡浠?- 鍚姩瑙嗛閲囬泦鍜岀畻娉曟娴?
-
-        杩涘叆MONITORING闃舵,寮€濮嬪疄鏃舵娴嬭繚瑙勮涓哄拰鍐茬嚎浜嬩欢
-        """
-        # 楠岃瘉浼氳瘽涓€鑷存€?
+        """Switch to MONITORING phase and ensure pipeline is running."""
         self._ensure_same_session(payload)
-        # 楠岃瘉褰撳墠闃舵蹇呴』鏄疊INDING闃舵(鍙兘浠庣粦瀹氶樁娈佃繘鍏ョ洃鎺ч樁娈?
         self._ensure_phase([NodePhase.BINDING])
 
-        # 鍒囨崲鍒扮洃鎺ч樁娈?
         self.state.phase = NodePhase.MONITORING
-        # 淇濆瓨棰勮寮€濮嬫椂闂?
         self.state.expected_start_time = (payload.config or {}).get(
             "expected_start_time"
         )
         self.state.config["ready_ts"] = int(time.time() * 1000)
-        # 婵€娲昏窡韪姛鑳?
         self.state.config["tracking_active"] = (payload.config or {}).get(
             "tracking_active", True
         )
@@ -225,41 +184,36 @@ class CommandHandler:
             "countdown_seconds", 3
         )
 
-        # 濡傛灉瑙嗛绠￠亾鏈繍琛?鍒欏惎鍔ㄥ畠
         if not self.pipeline.running:
             try:
                 self.pipeline.start()
             except Exception as exc:
                 self.state.capture_error = str(exc)
-                raise HTTPException(status_code=503, detail="鎽勫儚澶存墦寮€澶辫触")
+                self.logger.error("pipeline start failed session=%s error=%s", self.state.session_id, exc)
+                raise HTTPException(status_code=503, detail="camera open failed")
 
-        # 鏇存柊閲囬泦鐘舵€?
         self.state.capture_running = self.pipeline.running
         self.state.capture_error = None
 
-        # 濡傛灉鍚敤浜嗕簨浠舵ā鎷?鍚姩妯℃嫙鍣?
         if self.settings.simulate_events:
             lane_count = int(self.state.config.get("lane_count", 1) or 1)
             self.event_sim.start(self.state.session_id or "UNKNOWN", lane_count)
         self._touch(payload.cmd)
+        self.logger.info(
+            "monitor started session=%s expected_start=%s tracking_active=%s countdown=%s capture_running=%s",
+            self.state.session_id,
+            self.state.expected_start_time,
+            self.state.config.get("tracking_active"),
+            self.state.config.get("countdown_seconds"),
+            self.state.capture_running,
+        )
 
     def _handle_stop(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊鍋滄鍛戒护 - 鍋滄鐩戞帶骞舵竻鐞嗚祫婧?
-
-        杩涘叆STOPPED闃舵,鍋滄瑙嗛閲囬泦鍜屼簨浠剁敓鎴?
-        """
-        # 楠岃瘉浼氳瘽涓€鑷存€?
+        """Stop current round and optionally stop capture."""
         self._ensure_same_session(payload)
-        # 鍒囨崲鍒板仠姝㈤樁娈?
         self.state.phase = NodePhase.STOPPED
-        # 淇濆瓨鍋滄鍘熷洜
         self.state.stop_reason = (payload.config or {}).get("reason")
         reason = str(self.state.stop_reason or "")
-        # 鍖哄垎鈥滃仠姝笟鍔♀€濅笌鈥滃叧闂瑙?閲囬泦鈥濓細
-        # - 榛樿鎯呭喌涓嬶細鍋滄涓氬姟骞跺仠姝㈢閬擄紙涓庡巻鍙茶涓轰竴鑷达級
-        # - BINDING_TIMEOUT锛氶粯璁や粎鍋滄涓氬姟锛屼繚鐣欓瑙堢獥鍙ｇ敤浜庣幇鍦烘帓鏌?
-        # - 鍙€氳繃 payload.config.stop_capture 鏄惧紡瑕嗙洊
         stop_capture = bool(
             (payload.config or {}).get(
                 "stop_capture",
@@ -287,9 +241,8 @@ class CommandHandler:
                 )
             except Exception as exc:
                 self.logger.warning("binding timeout diagnostics failed: %s", exc)
-        # 鍏抽棴璺熻釜鍔熻兘
+
         self.state.config["tracking_active"] = False
-        # 鍙€夊仠姝㈣棰戝鐞嗙閬擄紙浼氬叧闂彲瑙嗗寲绐楀彛锛?
         if stop_capture:
             self.pipeline.stop()
             self.state.capture_running = False
@@ -302,17 +255,19 @@ class CommandHandler:
                 stop_capture,
             )
             self.state.capture_running = self.pipeline.running
-        # 鍋滄浜嬩欢妯℃嫙
+
         self.event_sim.stop()
         self._touch(payload.cmd)
+        self.logger.info(
+            "monitor stopped session=%s reason=%s stop_capture=%s capture_running=%s",
+            self.state.session_id,
+            reason or "-",
+            stop_capture,
+            self.state.capture_running,
+        )
 
     def _handle_reset_round(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊杞閲嶇疆鍛戒护銆?
-
-        淇濈暀缁戝畾淇℃伅锛屽皢鑺傜偣鎭㈠鍒扮瓑寰呴噸鏂拌捣璺戠殑鍑嗗鎬侊紝
-        閫傜敤浜庢姠璺戠瓑杩濊鍚庣殑蹇€熼噸寮€銆?
-        """
+        """Reset one round while keeping session and binding context."""
         self._ensure_same_session(payload)
         self._ensure_phase([NodePhase.BINDING, NodePhase.MONITORING, NodePhase.STOPPED])
 
@@ -334,59 +289,40 @@ class CommandHandler:
 
         self.event_sim.stop()
         self._touch(payload.cmd)
+        self.logger.info("round reset session=%s phase=%s", self.state.session_id, self.state.phase.value)
 
     def _handle_heartbeat(self, payload: CommandPayload) -> None:
-        """
-        澶勭悊蹇冭烦鍛戒护 - 淇濇寔浼氳瘽娲昏穬
-
-        浜戠瀹氭湡鍙戦€佸績璺充互纭杈圭紭璁惧鍦ㄧ嚎
-        """
-        # 楠岃瘉浼氳瘽涓€鑷存€?鍏佽绌轰細璇?鐢ㄤ簬鍒濆杩炴帴)
+        """Keepalive command."""
         self._ensure_same_session(payload, allow_empty=True)
         self._touch(payload.cmd)
-
-    # ==================== 杈呭姪鏂规硶 ====================
 
     def _ensure_same_session(
         self, payload: CommandPayload, allow_empty: bool = False
     ) -> None:
-        """
-        楠岃瘉鍛戒护鐨勪細璇滻D涓庡綋鍓嶇姸鎬佷竴鑷?
-
-        Args:
-            payload: 鍛戒护璐熻浇
-            allow_empty: 鏄惁鍏佽褰撳墠浼氳瘽涓虹┖(鐢ㄤ簬鍒濆杩炴帴)
-
-        Raises:
-            HTTPException: 浼氳瘽涓嶅尮閰嶆椂杩斿洖409閿欒
-        """
+        """Validate session consistency before applying state transitions."""
         if allow_empty and not self.state.session_id:
             return
         if self.state.session_id and self.state.session_id != payload.session_id:
+            self.logger.warning(
+                "session mismatch current=%s incoming=%s cmd=%s",
+                self.state.session_id,
+                payload.session_id,
+                payload.cmd,
+            )
             raise HTTPException(status_code=409, detail="node session mismatch")
 
     def _ensure_phase(self, allowed: list[NodePhase]) -> None:
-        """
-        楠岃瘉褰撳墠闃舵鏄惁鍦ㄥ厑璁哥殑鍒楄〃涓?
-
-        Args:
-            allowed: 鍏佽鐨勯樁娈靛垪琛?
-
-        Raises:
-            HTTPException: 闃舵涓嶅尮閰嶆椂杩斿洖409閿欒
-        """
+        """Validate command can be executed in current phase."""
         if self.state.phase not in allowed:
+            allowed_values = [p.value for p in allowed]
+            self.logger.warning("phase mismatch current=%s allowed=%s", self.state.phase.value, allowed_values)
             raise HTTPException(
                 status_code=409,
-                detail=f"褰撳墠闃舵 {self.state.phase} 鏃犳晥; 鍏佽鐨勯樁娈? {[p.value for p in allowed]}",
+                detail=f"invalid phase {self.state.phase}; allowed: {allowed_values}",
             )
 
     def _touch(self, cmd: str) -> None:
-        """
-        鏇存柊鐘舵€佹椂闂存埑鍜屾渶鍚庡懡浠?
-
-        姣忔澶勭悊鍛戒护鍚庤皟鐢?璁板綍鎿嶄綔鏃堕棿
-        """
+        """Update basic command metadata."""
         self.state.last_command = cmd
         self.state.last_updated_ms = int(time.time() * 1000)
 
@@ -429,8 +365,7 @@ class CommandHandler:
                         observed_lanes.append(int(item["lane"]))
         observed_lanes = list(dict.fromkeys(observed_lanes))
 
-        # 缁戝畾灏辩华浼樺厛鎸夆€滃綋鍓嶇敾闈㈤噷瀹為檯鍑虹幇鐨勮窇閬撯€濆垽瀹氾紝
-        # 浣嗕粎闄愪簬宸查厤缃粦瀹氱殑璺戦亾锛岄伩鍏嶆棤鍏冲尯鍩熷共鎵般€?
+        # Prefer lanes actually observed in current frame; fallback to configured lanes.
         if configured_target_lanes and observed_lanes:
             observed_set = set(observed_lanes)
             target_lanes = [lane for lane in configured_target_lanes if lane in observed_set]
@@ -550,42 +485,22 @@ class CommandHandler:
         self.algo.publisher = publisher
 
     def snapshot(self) -> dict:
-        """
-        鑾峰彇褰撳墠鐘舵€佺殑蹇収
-
-        Returns:
-            褰撳墠鐘舵€佺殑瀛楀吀琛ㄧず
-        """
+        """Return full in-memory node state snapshot."""
         return self.state.model_dump()
 
-    # 娉ㄦ剰: 浣跨敤 EdgePipeline 鏃朵笉闇€瑕?_on_frame 鍥炶皟
-    # EdgePipeline 鐨?_logic_worker 鐩存帴璋冪敤 algo.process_frame() 鎴?algo.process_pipeline_result()
-
-    # ==================== 鐘舵€佹寔涔呭寲 ====================
-
     def _persist_state(self) -> None:
-        """
-        灏嗗綋鍓嶇姸鎬佹寔涔呭寲鍒癑SON鏂囦欢
-
-        鐢ㄤ簬鏈嶅姟閲嶅惎鍚庢仮澶嶇姸鎬?
-        """
+        """Persist state snapshot to disk for troubleshooting/recovery."""
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         with self.state_file.open("w", encoding="utf-8") as f:
             json.dump(self.state.model_dump(), f, ensure_ascii=False, indent=2)
 
     def _load_state(self) -> NodeState:
-        """
-        浠嶫SON鏂囦欢鍔犺浇鐘舵€?
-
-        Returns:
-            鍔犺浇鐨勮妭鐐圭姸鎬?濡傛灉鏂囦欢涓嶅瓨鍦ㄦ垨鎹熷潖鍒欒繑鍥炴柊鐘舵€?
-        """
+        """Load previous state snapshot; fallback to empty state if unavailable."""
         try:
             data = json.loads(self.state_file.read_text(encoding="utf-8"))
             return NodeState(**data)
         except FileNotFoundError:
-            # 棣栨杩愯,鍒涘缓鏂扮姸鎬?
             return NodeState(node_id=self.settings.node_id)
-        except Exception as exc:  # 鐘舵€佹枃浠舵崯鍧?
-            logging.getLogger("edge.command").warning("鍔犺浇 state.json 澶辫触: %s", exc)
+        except Exception as exc:  # corrupted or incompatible state file
+            logging.getLogger("edge.command").warning("failed to load state.json, fallback to empty state: %s", exc)
             return NodeState(node_id=self.settings.node_id)

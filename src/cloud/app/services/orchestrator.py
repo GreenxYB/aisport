@@ -30,12 +30,22 @@ class SessionOrchestrator:
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._logger = logging.getLogger("cloud.orchestrator")
+        self._throttled_log_ts: dict[str, float] = {}
+
+    def _log_throttled(self, key: str, interval_sec: float, level: str, msg: str, *args) -> None:
+        now = time.time()
+        last = self._throttled_log_ts.get(key, 0.0)
+        if now - last < interval_sec:
+            return
+        self._throttled_log_ts[key] = now
+        getattr(self._logger, level)(msg, *args)
 
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
         self._stop_event = asyncio.Event()
         self._task = asyncio.create_task(self._run_loop(), name="session-orchestrator")
+        self._logger.info("session orchestrator started")
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -46,10 +56,12 @@ class SessionOrchestrator:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        self._logger.info("session orchestrator stopped")
 
     async def register_session(self, session_id: str) -> None:
         async with self._lock:
             self._workflows.setdefault(session_id, SessionWorkflow(session_id=session_id))
+        self._logger.info("session registered session_id=%s", session_id)
 
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -73,6 +85,7 @@ class SessionOrchestrator:
         if session is None:
             async with self._lock:
                 self._workflows.pop(session_id, None)
+            self._logger.info("session removed from orchestrator session_id=%s", session_id)
             return
 
         async with self._lock:
@@ -88,6 +101,18 @@ class SessionOrchestrator:
 
         all_online = all(bool(online_nodes.get(node_id, {}).get("online")) for node_id in required)
         if not all_online:
+            offline_nodes = [
+                node_id for node_id in required if not bool(online_nodes.get(node_id, {}).get("online"))
+            ]
+            self._log_throttled(
+                f"offline:{session_id}",
+                5,
+                "warning",
+                "session waiting offline nodes session=%s status=%s offline_nodes=%s",
+                session_id,
+                session.status,
+                offline_nodes,
+            )
             return
 
         init_dispatched = False
@@ -102,6 +127,12 @@ class SessionOrchestrator:
         if init_dispatched:
             workflow.init_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "INIT_SENT")
+            self._logger.info(
+                "init commands dispatched session=%s delivered=%s/%s",
+                session.session_id,
+                len(workflow.init_sent_to),
+                len(required),
+            )
 
         if len(workflow.init_sent_to) < len(required):
             return
@@ -118,6 +149,12 @@ class SessionOrchestrator:
         if binding_dispatched:
             workflow.binding_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "BINDING_SENT")
+            self._logger.info(
+                "binding commands dispatched session=%s delivered=%s/%s",
+                session.session_id,
+                len(workflow.binding_sent_to),
+                len(required),
+            )
 
         if len(workflow.binding_sent_to) < len(required):
             return
@@ -128,6 +165,11 @@ class SessionOrchestrator:
             and workflow.binding_sent_at_ms is not None
             and now_ms - workflow.binding_sent_at_ms >= int(session.binding_timeout_sec * 1000)
         ):
+            self._logger.warning(
+                "binding timeout reached session=%s timeout_sec=%s",
+                session.session_id,
+                session.binding_timeout_sec,
+            )
             self._session_service.finish(
                 session.session_id,
                 status="BINDING_TIMEOUT",
@@ -142,23 +184,39 @@ class SessionOrchestrator:
             return
 
         all_ready = True
+        blocking_node: int | None = None
+        blocking_reason = ""
         for node_id in required:
             row = online_nodes.get(node_id)
             last_status = row.get("last_status") if row else None
             status_data = (last_status or {}).get("data", {})
             if (last_status or {}).get("session_id") != session.session_id:
                 all_ready = False
+                blocking_node = node_id
+                blocking_reason = "session_not_synced"
                 break
             node_role = row.get("node_role") if row else None
             if not self._session_service.is_node_ready(session, status_data, node_role):
                 all_ready = False
+                blocking_node = node_id
+                blocking_reason = "node_not_ready"
                 break
 
         if not all_ready:
+            self._log_throttled(
+                f"not_ready:{session_id}",
+                5,
+                "info",
+                "session waiting readiness session=%s blocking_node=%s reason=%s",
+                session_id,
+                blocking_node,
+                blocking_reason,
+            )
             return
 
         if workflow.all_ready_at_ms is None:
             workflow.all_ready_at_ms = int(time.time() * 1000)
+            self._logger.info("session all required nodes ready session=%s", session_id)
         expected_start_time = int(time.time() * 1000) + session.start_delay_ms
         self._session_service.set_expected_start_time(session.session_id, expected_start_time)
         queued = 0
@@ -179,6 +237,19 @@ class SessionOrchestrator:
             workflow.start_sent = True
             workflow.start_sent_at_ms = int(time.time() * 1000)
             self._session_service.update_status(session.session_id, "RUNNING")
+            self._logger.info(
+                "start monitor dispatched session=%s expected_start_time=%s nodes=%s",
+                session.session_id,
+                expected_start_time,
+                required,
+            )
+        else:
+            self._logger.warning(
+                "start monitor partial dispatch session=%s delivered=%s/%s",
+                session.session_id,
+                queued,
+                len(required),
+            )
 
         await self._finalize_running_session_if_needed(session, workflow, required, now_ms)
 
@@ -214,6 +285,12 @@ class SessionOrchestrator:
         terminal_lanes = finish_lanes | false_start_lanes
 
         if target_lanes and target_lanes.issubset(terminal_lanes):
+            self._logger.info(
+                "session finished all lanes terminal session=%s target_lanes=%s terminal_lanes=%s",
+                session.session_id,
+                sorted(target_lanes),
+                sorted(terminal_lanes),
+            )
             self._session_service.finish(
                 session.session_id,
                 status="FINISHED",
@@ -225,6 +302,12 @@ class SessionOrchestrator:
 
         race_deadline_ms = int(session.expected_start_time) + int(session.race_timeout_sec * 1000)
         if now_ms >= race_deadline_ms:
+            self._logger.warning(
+                "race timeout reached session=%s deadline_ms=%s now_ms=%s",
+                session.session_id,
+                race_deadline_ms,
+                now_ms,
+            )
             self._session_service.finish(
                 session.session_id,
                 status="RACE_TIMEOUT",
@@ -250,6 +333,13 @@ class SessionOrchestrator:
         if delivered:
             workflow.stop_sent = True
             workflow.stop_sent_at_ms = int(time.time() * 1000)
+            self._logger.info(
+                "stop dispatched session=%s reason=%s delivered=%s/%s",
+                session.session_id,
+                reason,
+                delivered,
+                len(required),
+            )
 
     async def get_workflow_snapshot(self, session_id: str) -> dict | None:
         async with self._lock:
